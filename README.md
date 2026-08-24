@@ -23,9 +23,9 @@
 | macOS 13 이상 | 카카오톡 Mac 앱과 접근성 API |
 | Xcode Command Line Tools | `swiftc` 로 네이티브 헬퍼를 빌드한다 (`xcode-select --install`) |
 | [카카오톡 Mac 앱](https://apps.apple.com/kr/app/kakaotalk/id869223134?mt=12) | 로그인된 상태여야 한다 |
-| Node 20 이상 + corepack | yarn 4 는 corepack 이 자동으로 받아온다 (`corepack enable`) |
+| Node 20 이상 | npm 은 Node 에 딸려온다 |
 
-외부 CLI 도구는 필요 없다. 저장소를 받아 `yarn install` 하면 나머지는 `yarn dev` 가 처리한다.
+외부 CLI 도구도, 별도 패키지 매니저도 필요 없다.
 
 **터미널 앱에 손쉬운 사용(Accessibility) 권한**이 필요하다.
 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 쓰는 터미널 앱을 추가한다.
@@ -36,16 +36,15 @@
 ## 실행
 
 ```bash
-corepack enable
-yarn install
-yarn dev
+npm install
+npm run dev
 ```
 
 **카카오톡에서 쓰려는 채팅방 창을 먼저 열어둔다.** 첫 실행에서 그중 하나를 고른다
-(열린 창이 하나뿐이면 자동으로 잡는다). 다시 고르려면 `yarn dev setup`.
+(열린 창이 하나뿐이면 자동으로 잡는다). 다시 고르려면 `npm run dev setup`.
 설정은 `~/.config/tkt/config.json` 에 저장된다.
 
-`yarn dev` 는 매번 네이티브 헬퍼(`native/tkt-ax`)를 먼저 컴파일한다. 2초쯤 걸린다.
+`npm run dev` 는 매번 네이티브 헬퍼(`native/tkt-ax`)를 먼저 컴파일한다. 2초쯤 걸린다.
 
 ## 쓰는 법
 

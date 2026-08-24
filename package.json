@@ -3,13 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "yarn@4.12.0",
   "description": "터미널에서 카카오톡 채팅방 하나를 주고받는 TUI",
   "bin": "./dist/cli.js",
   "scripts": {
-    "dev": "yarn build:native && tsx src/cli.tsx",
-    "build": "yarn build:native && tsc",
-    "start": "yarn build:native && node dist/cli.js",
+    "dev": "npm run build:native && tsx src/cli.tsx",
+    "build": "npm run build:native && tsc",
+    "start": "npm run build:native && node dist/cli.js",
     "build:native": "swiftc -O native/tkt-ax.swift -o native/tkt-ax"
   },
   "dependencies": {
@@ -22,5 +21,8 @@
     "@types/react": "^18.3.18",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
