@@ -81,12 +81,7 @@ export default function App({ config }: { config: Config }) {
       while (active) {
         try {
           setStatus(first ? '대화 불러오는 중…' : '새 메시지 확인 중…')
-          const messages = await readMessages(
-            chatName,
-            config.historyLimit,
-            // 재열기는 chat_id 를 아는 기본 채팅방일 때만 가능하다.
-            chatName === config.displayName ? config.chatId : undefined,
-          )
+          const messages = await readMessages(chatName, config.historyLimit)
           if (!active) return
 
           const next = messages.map(toRow)
@@ -128,7 +123,7 @@ export default function App({ config }: { config: Config }) {
       setRows([])
       setPending([])
     }
-  }, [chatName, config.chatId, config.displayName, config.historyLimit, config.pollIntervalMs])
+  }, [chatName, config.historyLimit, config.pollIntervalMs])
 
   useInput((_input, key) => {
     if (pickerOpen) {

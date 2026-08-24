@@ -24,7 +24,8 @@
 | Xcode Command Line Tools | `swiftc` 로 네이티브 헬퍼를 빌드한다 (`xcode-select --install`) |
 | [카카오톡 Mac 앱](https://apps.apple.com/kr/app/kakaotalk/id869223134?mt=12) | 로그인된 상태여야 한다 |
 | Node 20 이상 + corepack | yarn 4 는 corepack 이 자동으로 받아온다 (`corepack enable`) |
-| [kmsg](https://github.com/channprj/kmsg) | 최초 설정의 채팅방 목록 조회, 채팅창이 닫혔을 때 재열기<br>`brew install channprj/tap/kmsg` |
+
+외부 CLI 도구는 필요 없다. 저장소를 받아 `yarn install` 하면 나머지는 `yarn dev` 가 처리한다.
 
 **터미널 앱에 손쉬운 사용(Accessibility) 권한**이 필요하다.
 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 쓰는 터미널 앱을 추가한다.
@@ -40,7 +41,8 @@ yarn install
 yarn dev
 ```
 
-첫 실행에서 대상 채팅방을 고른다. 다시 고르려면 `yarn dev setup`.
+**카카오톡에서 쓰려는 채팅방 창을 먼저 열어둔다.** 첫 실행에서 그중 하나를 고른다
+(열린 창이 하나뿐이면 자동으로 잡는다). 다시 고르려면 `yarn dev setup`.
 설정은 `~/.config/tkt/config.json` 에 저장된다.
 
 `yarn dev` 는 매번 네이티브 헬퍼(`native/tkt-ax`)를 먼저 컴파일한다. 2초쯤 걸린다.
@@ -56,8 +58,7 @@ yarn dev
 ## 알아둘 것
 
 - **대상 채팅방의 카카오톡 창이 열려 있어야 한다.** 최소화하지 말고 뒤에 두거나 다른
-  화면에 둔다. 닫혀 있으면 kmsg 로 한 번 다시 여는데, 이때만 카카오톡이 앞으로 나오고
-  십수 초 걸린다.
+  화면에 둔다. tkt 는 채팅창을 직접 열지 못하고, 열려 있는 창을 다루기만 한다.
 - **`Tab` 전환은 이미 열려 있는 창들 사이에서만 된다.** 다른 방으로 가려면 카카오톡에서
   먼저 열어둔다.
 - **tkt 는 하나만 띄운다.** 여러 개가 동시에 접근성 API를 두드리면 서로 막혀서 몇십 초씩
@@ -68,7 +69,7 @@ yarn dev
 ## 구조
 
 ```
-src/kakao.ts      카카오톡 연동 계층 (모든 호출을 직렬화)
+src/kakao.ts      카카오톡 연동 계층 (읽기·전송을 직렬화)
 src/app.tsx       Ink TUI — 폴링 루프, 채팅방 전환
 src/cli.tsx       진입점, 최초 설정
 native/tkt-ax.swift   접근성 API 헬퍼 — read / send / windows

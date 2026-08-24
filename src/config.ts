@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 
 export type Config = {
-  chatId: string
+  /** 카카오톡 채팅창 제목. 채팅방을 식별하는 유일한 키다. */
   displayName: string
   /** 한 번 읽고 나서 다음 읽기까지 쉬는 시간(ms). */
   pollIntervalMs: number
@@ -23,10 +23,9 @@ export async function loadConfig(): Promise<Config | null> {
   try {
     const raw = await readFile(FILE, 'utf8')
     const parsed = JSON.parse(raw) as Partial<Config>
-    if (!parsed.chatId) return null
+    if (!parsed.displayName) return null
     return {
-      chatId: parsed.chatId,
-      displayName: parsed.displayName ?? parsed.chatId,
+      displayName: parsed.displayName,
       pollIntervalMs: parsed.pollIntervalMs ?? DEFAULTS.pollIntervalMs,
       historyLimit: parsed.historyLimit ?? DEFAULTS.historyLimit,
     }

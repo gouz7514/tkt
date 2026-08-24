@@ -4,42 +4,48 @@ import { render } from 'ink'
 import { createInterface } from 'node:readline/promises'
 import App from './app.js'
 import { DEFAULTS, configPath, loadConfig, saveConfig, type Config } from './config.js'
-import { listChats, missingTools } from './kakao.js'
+import { listOpenChats, missingTools } from './kakao.js'
 
+/**
+ * 대상 채팅방을 고른다.
+ *
+ * 카카오톡에서 이미 열려 있는 채팅창만 후보가 된다. tkt 는 채팅창을 직접 열지 못하고
+ * 열려 있는 창을 다루기만 하기 때문이다.
+ */
 async function setup(): Promise<Config> {
-  console.log('채팅방 목록을 불러오는 중… (20초 정도 걸립니다)\n')
-  const chats = await listChats()
+  const chats = await listOpenChats()
 
   if (chats.length === 0) {
-    console.error('채팅방을 찾지 못했습니다. 카카오톡이 실행되어 로그인돼 있는지 확인하세요.')
+    console.error('열려 있는 카카오톡 채팅창이 없습니다.')
+    console.error('카카오톡에서 쓰려는 채팅방을 먼저 연 다음 다시 실행하세요.')
     process.exit(1)
   }
 
-  chats.forEach((c, i) => {
-    const preview = (c.last_message ?? '').replace(/\s+/g, ' ').slice(0, 40)
-    console.log(`${String(i + 1).padStart(3)}. ${c.title}`)
-    if (preview) console.log(`     ${preview}`)
-  })
+  let chosen = chats[0]!
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  const answer = await rl.question('\n연결할 채팅방 번호: ')
-  rl.close()
+  if (chats.length > 1) {
+    console.log('열려 있는 채팅방:\n')
+    chats.forEach((title, i) => console.log(`${String(i + 1).padStart(3)}. ${title}`))
 
-  const index = Number(answer.trim()) - 1
-  const chosen = chats[index]
-  if (!chosen) {
-    console.error('잘못된 번호입니다.')
-    process.exit(1)
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const answer = await rl.question('\n연결할 채팅방 번호: ')
+    rl.close()
+
+    const picked = chats[Number(answer.trim()) - 1]
+    if (!picked) {
+      console.error('잘못된 번호입니다.')
+      process.exit(1)
+    }
+    chosen = picked
   }
 
   const config: Config = {
-    chatId: chosen.chat_id,
-    displayName: chosen.title,
+    displayName: chosen,
     pollIntervalMs: DEFAULTS.pollIntervalMs,
     historyLimit: DEFAULTS.historyLimit,
   }
   const path = await saveConfig(config)
-  console.log(`\n✓ "${chosen.title}" 채팅방에 연결했습니다.`)
+  console.log(`\n✓ "${chosen}" 채팅방에 연결했습니다.`)
   console.log(`  설정 저장 위치: ${path}\n`)
   return config
 }
@@ -54,12 +60,6 @@ async function main() {
 
   const command = process.argv[2]
 
-  if (command === 'setup') {
-    await setup()
-    console.log('이제 tkt 를 실행하세요.')
-    return
-  }
-
   if (command === '--help' || command === '-h') {
     console.log(`tkt — 터미널에서 카카오톡 채팅방 하나 주고받기
 
@@ -67,7 +67,14 @@ async function main() {
   tkt           설정된 채팅방을 엽니다
   tkt setup     대상 채팅방을 다시 고릅니다
 
+카카오톡에서 쓰려는 채팅방 창을 열어둔 상태여야 합니다.
 설정 파일: ${configPath}`)
+    return
+  }
+
+  if (command === 'setup') {
+    await setup()
+    console.log('이제 tkt 를 실행하세요.')
     return
   }
 
