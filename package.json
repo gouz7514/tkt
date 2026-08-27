@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "터미널에서 카카오톡 채팅방 하나를 주고받는 TUI",
+  "license": "MIT",
   "bin": "./dist/cli.js",
   "scripts": {
     "dev": "npm run build:native && tsx src/cli.tsx",
