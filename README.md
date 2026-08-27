@@ -42,7 +42,7 @@ npm run dev
 
 **카카오톡에서 쓰려는 채팅방 창을 먼저 열어둔다.** 첫 실행에서 그중 하나를 고른다
 (열린 창이 하나뿐이면 자동으로 잡는다). 다시 고르려면 `npm run dev setup`.
-설정은 `~/.config/tkt/config.json` 에 저장된다.
+설정은 프로젝트 폴더의 `config.json` 에 저장된다 (git 에는 올라가지 않는다).
 
 `npm run dev` 는 매번 네이티브 헬퍼(`native/tkt-ax`)를 먼저 컴파일한다. 2초쯤 걸린다.
 

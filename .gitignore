@@ -2,3 +2,6 @@ node_modules/
 dist/
 
 native/tkt-ax
+
+# 사용자별 설정 — 대상 채팅방 이름이 들어간다
+config.json

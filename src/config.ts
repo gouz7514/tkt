@@ -1,6 +1,5 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { readFile, writeFile } from 'node:fs/promises'
 
 export type Config = {
   /** 카카오톡 채팅창 제목. 채팅방을 식별하는 유일한 키다. */
@@ -11,8 +10,8 @@ export type Config = {
   historyLimit: number
 }
 
-const DIR = join(homedir(), '.config', 'tkt')
-const FILE = join(DIR, 'config.json')
+// 프로젝트 루트의 config.json. src/ 와 dist/ 모두 루트 한 단계 아래라 같은 곳을 가리킨다.
+const FILE = fileURLToPath(new URL('../config.json', import.meta.url))
 
 export const DEFAULTS = {
   pollIntervalMs: 1_000,
@@ -35,7 +34,6 @@ export async function loadConfig(): Promise<Config | null> {
 }
 
 export async function saveConfig(config: Config): Promise<string> {
-  await mkdir(DIR, { recursive: true })
   await writeFile(FILE, JSON.stringify(config, null, 2) + '\n', 'utf8')
   return FILE
 }
