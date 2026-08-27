@@ -4,8 +4,8 @@
  * 읽기·전송 모두 직접 만든 `native/tkt-ax`가 담당한다. AX 트리를 직접 다루므로 빠르고
  * 카카오톡 창을 앞으로 끌어올리지 않는다.
  *
- * 채팅방은 카카오톡 창 제목으로만 식별한다. 그래서 이미 열려 있는 채팅창만 다룰 수 있고,
- * 대신 외부 도구 없이 이 저장소만으로 동작한다.
+ * 채팅방은 카카오톡 창 제목으로 식별한다. 닫혀 있는 방은 헬퍼가 채팅 목록에서 찾아
+ * 열 수 있다. 외부 도구 없이 이 저장소만으로 동작한다.
  */
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -57,11 +57,42 @@ export async function listOpenChats(): Promise<string[]> {
   return (JSON.parse(out).windows ?? []) as string[]
 }
 
-/** 채팅창의 최근 메시지를 읽는다. 창이 닫혀 있으면 오류를 낸다. */
+/** 헬퍼가 "채팅창이 안 열려 있다"고 알려줄 때의 표식. */
+const WINDOW_CLOSED = '열려 있지 않습니다'
+
+/**
+ * 닫혀 있는 채팅방을 연다.
+ *
+ * 카카오톡 채팅 목록에서 방을 찾아 여는데, 목록 창까지 닫혀 있으면 「창 → 채팅」 메뉴로
+ * 되살린다. 앱 포커스는 뺏지 않지만 채팅창이 새로 뜨므로 화면에는 나타난다.
+ */
+export function openChat(chatName: string): Promise<void> {
+  return serialize(async () => {
+    await tktAx(['open', chatName])
+  })
+}
+
+/** 채팅창의 최근 메시지를 읽는다. 창이 닫혀 있으면 한 번 열고 다시 시도한다. */
 export function readMessages(chatName: string, limit: number): Promise<Message[]> {
   return serialize(async () => {
-    const out = await tktAx(['read', chatName, String(limit)])
-    return (JSON.parse(out).messages ?? []) as Message[]
+    const parse = async () => {
+      const out = await tktAx(['read', chatName, String(limit)])
+      return (JSON.parse(out).messages ?? []) as Message[]
+    }
+
+    try {
+      return await parse()
+    } catch (error) {
+      const detail = [
+        (error as { stderr?: string }).stderr ?? '',
+        error instanceof Error ? error.message : '',
+      ].join('\n')
+
+      if (!detail.includes(WINDOW_CLOSED)) throw error
+
+      await tktAx(['open', chatName])
+      return await parse()
+    }
   })
 }
 

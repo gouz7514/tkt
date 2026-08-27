@@ -21,9 +21,7 @@
 //   tkt-ax send <채팅방 이름> <메시지>
 //   tkt-ax read <채팅방 이름> [개수]
 //   tkt-ax windows                      열려 있는 채팅창 목록
-//   tkt-ax open <채팅방 이름>            [미완성] 채팅 목록에서 찾아 채팅창을 연다.
-//                                       검색·행 선택까지는 되지만 Return 으로 창이 열리지
-//                                       않고 카카오톡이 앞으로 나온다. 앱에서 호출하지 않는다.
+//   tkt-ax open <채팅방 이름>            닫혀 있는 채팅방을 연다
 
 import AppKit
 import ApplicationServices
@@ -183,11 +181,34 @@ let axApp = AXUIElementCreateApplication(pid)
 guard let windows = attribute(axApp, kAXWindowsAttribute as String) as? [AXUIElement] else {
     fail("카카오톡 창 목록을 읽지 못했습니다. 손쉬운 사용 권한을 확인하세요.")
 }
-let titles = windows.map { (attribute($0, kAXTitleAttribute as String) as? String) ?? "" }
+
+/// 지금 열려 있는 카카오톡 창들. 창은 명령 도중에도 늘어나므로 그때그때 다시 읽는다.
+func currentWindows() -> [(title: String, element: AXUIElement)] {
+    guard let ws = attribute(axApp, kAXWindowsAttribute as String) as? [AXUIElement] else { return [] }
+    return ws.map { ((attribute($0, kAXTitleAttribute as String) as? String) ?? "", $0) }
+}
+
+/// 채팅창 후보. 채팅 목록 창과, 카카오톡이 띄우는 제목 없는 AXUnknown 보조 창은 뺀다.
+///
+/// 최소화하거나 앱을 숨기면(Cmd+H) 창의 subrole 이 AXStandardWindow 에서 AXDialog 로
+/// 바뀐다. AX 트리 자체는 그대로 살아 있어서 읽기·전송 모두 되는데, subrole 만 보고
+/// 걸러내면 창이 사라진 것으로 보인다. 그러면 readMessages 가 "닫힌 방" 으로 오해해
+/// open 을 태우고, open 은 목록에서 방을 골라 Return 을 눌러 — 최소화해 둔 창을 도로
+/// 끄집어낸다. 그래서 최소화·숨김 상태의 AXDialog 는 채팅창으로 인정한다.
+func chatWindows() -> [(title: String, element: AXUIElement)] {
+    let appHidden = (attribute(axApp, kAXHiddenAttribute as String) as? Bool) ?? false
+    return currentWindows().filter {
+        guard !$0.title.isEmpty, !chatListWindowTitles.contains($0.title) else { return false }
+        let sub = attribute($0.element, kAXSubroleAttribute as String) as? String
+        if sub == "AXStandardWindow" { return true }
+        // 정상 상태에서 뜨는 진짜 모달 다이얼로그까지 채팅창으로 보지 않도록 조건을 건다.
+        let minimized = (attribute($0.element, kAXMinimizedAttribute as String) as? Bool) ?? false
+        return sub == "AXDialog" && (minimized || appHidden)
+    }
+}
 
 if command == "windows" {
-    let chats = titles.filter { !$0.isEmpty && !chatListWindowTitles.contains($0) }
-    let items = chats.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
+    let items = chatWindows().map { "\"\(jsonEscape($0.title))\"" }.joined(separator: ",")
     print("{\"windows\":[\(items)]}")
     exit(0)
 }
@@ -197,17 +218,44 @@ guard arguments.count >= 3 else {
 }
 let chatTitle = arguments[2]
 
-// open 은 채팅창이 아직 없는 상태에서 부르는 명령이므로 여기서 막지 않는다.
-// read/send 는 실제로 쓸 때 requireChatWindow() 로 확인한다.
-let chatWindowIndex = titles.firstIndex {
-    $0.contains(chatTitle) && !chatListWindowTitles.contains($0)
+enum ChatWindowMatch {
+    case found(AXUIElement)
+    case notOpen
+    case ambiguous([String])
 }
 
+/// 제목으로 채팅창을 고른다.
+///
+/// 정확히 일치하는 창을 먼저 보고, 없을 때만 부분 일치로 넓힌다. 부분 일치가 여럿이면
+/// 아무것도 고르지 않는다 — "김학재" 는 "김학재 가족방" 에도 걸리기 때문에, 그대로 두면
+/// 엉뚱한 방으로 메시지가 나간다. 읽기는 화면만 이상해지고 말지만 전송은 되돌릴 수 없다.
+func matchChatWindow(named name: String) -> ChatWindowMatch {
+    let candidates = chatWindows()
+    if let exact = candidates.first(where: { $0.title == name }) { return .found(exact.element) }
+    let partial = candidates.filter { $0.title.contains(name) }
+    if partial.count == 1 { return .found(partial[0].element) }
+    if partial.count > 1 { return .ambiguous(partial.map(\.title)) }
+    return .notOpen
+}
+
+func ambiguousMessage(_ name: String, _ matched: [String]) -> String {
+    "'\(name)' 와(과) 이름이 겹치는 채팅창이 여럿입니다: \(matched). "
+        + "어느 방인지 특정할 수 없어 아무 것도 하지 않았습니다. 채팅방 이름을 정확히 지정하세요."
+}
+
+// open 은 채팅창이 아직 없는 상태에서 부르는 명령이므로 여기서 막지 않는다.
+// read/send 는 실제로 쓸 때 requireChatWindow() 로 확인한다.
 func requireChatWindow() -> AXUIElement {
-    guard let index = chatWindowIndex else {
-        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다. 열린 창: \(titles)")
+    switch matchChatWindow(named: chatTitle) {
+    case .found(let window):
+        return window
+    case .ambiguous(let matched):
+        // 이 문구에 kakao.ts 의 WINDOW_CLOSED 표식이 들어가면 안 된다. 들어가면 창이 닫힌
+        // 것으로 오해해 open 을 시도하고, 결국 아무 방이나 열어버린다.
+        fail(ambiguousMessage(chatTitle, matched))
+    case .notOpen:
+        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다. 열린 창: \(chatWindows().map(\.title))")
     }
-    return windows[index]
 }
 
 // MARK: - read
@@ -290,13 +338,34 @@ func runRead(limit: Int) -> Never {
     exit(0)
 }
 
-// MARK: - open (미완성)
-//
-// 목록 테이블의 행은 Return 을 받아도 채팅창을 열지 않는다. 더블클릭이나 다른 액션이
-// 필요한 것으로 보이며, 아직 확인하지 못했다. 지금은 어디에서도 호출하지 않는다.
+// MARK: - open
 
-/// 목록 창의 검색 필드를 찾는다. 채팅방 행을 필터링하는 유일한 통로다
-/// (목록 테이블은 가상화돼 있어 화면에 보이는 몇 줄만 AX 트리에 존재한다).
+func findListWindow() -> AXUIElement? {
+    currentWindows().first { chatListWindowTitles.contains($0.title) }?.element
+}
+
+/// 「창」 메뉴의 항목을 누른다.
+///
+/// 채팅 목록 창이 닫혀 있으면 다른 방법으로는 되살릴 수 없다. `activate()` 도 `open -a` 도
+/// 창을 되돌려주지 않는다. 반면 메뉴 항목 AXPress 는 앱을 활성화하지 않고도 동작한다.
+func pressWindowMenuItem(_ wanted: [String]) -> Bool {
+    guard let barRef = attribute(axApp, kAXMenuBarAttribute as String) else { return false }
+    let bar = barRef as! AXUIElement
+    for top in children(of: bar) {
+        for menu in children(of: top) {
+            for item in children(of: menu) {
+                let title = (attribute(item, kAXTitleAttribute as String) as? String) ?? ""
+                if wanted.contains(title) {
+                    return AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+                }
+            }
+        }
+    }
+    return false
+}
+
+/// 목록 창의 검색 필드. 채팅방 행을 필터링하는 통로다 — 목록 테이블은 가상화돼 있어
+/// 화면 근처의 행만 AX 트리에 존재하므로, 아래쪽 채팅방은 검색해야 나온다.
 func findSearchField(in window: AXUIElement, depth: Int = 0) -> AXUIElement? {
     if depth > 10 { return nil }
     if role(of: window) == "AXTextField" {
@@ -333,90 +402,106 @@ func rowTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
     return out
 }
 
-func openWindowTitles() -> [String] {
-    guard let ws = attribute(axApp, kAXWindowsAttribute as String) as? [AXUIElement] else { return [] }
-    return ws.map { (attribute($0, kAXTitleAttribute as String) as? String) ?? "" }
+func findRow(in table: AXUIElement, matching name: String) -> AXUIElement? {
+    children(of: table).first { row in
+        rowTexts(row).contains { $0.contains(name) }
+    }
 }
 
 func runOpen(chat: String) -> Never {
-    if openWindowTitles().contains(where: { $0.contains(chat) && !chatListWindowTitles.contains($0) }) {
+    switch matchChatWindow(named: chat) {
+    case .found:
         print("already open")
         exit(0)
+    case .ambiguous(let matched):
+        fail(ambiguousMessage(chat, matched))
+    case .notOpen:
+        break
     }
 
-    guard let listIndex = titles.firstIndex(where: { chatListWindowTitles.contains($0) }) else {
-        fail(
-            titles.isEmpty
-                ? "카카오톡 창이 하나도 열려 있지 않습니다. Dock 에서 카카오톡을 한 번 열어주세요."
-                : "카카오톡 채팅 목록 창을 찾지 못했습니다. 열린 창: \(titles)"
-        )
+    if findListWindow() == nil, !pressWindowMenuItem(["채팅", "Chats"]) {
+        fail("카카오톡 채팅 목록 창을 열 수 없습니다. 카카오톡을 한 번 열어주세요.")
     }
-    let listWindow = windows[listIndex]
 
-    guard let search = findSearchField(in: listWindow) else {
-        fail("채팅 목록 창에서 검색창을 찾지 못했습니다")
+    var listWindow: AXUIElement?
+    for _ in 0..<20 {
+        if let window = findListWindow() { listWindow = window; break }
+        usleep(150_000)
     }
-    guard let table = findTable(in: listWindow) else {
-        fail("채팅 목록을 찾지 못했습니다")
+    guard let list = listWindow else {
+        fail("카카오톡 채팅 목록 창을 찾지 못했습니다")
     }
-    guard let source = CGEventSource(stateID: .combinedSessionState) else {
-        fail("CGEventSource 를 만들지 못했습니다")
+    // 목록 창이 「친구」 탭을 보고 있으면 채팅 목록(AXTable) 대신 AXOutline 이 그려진다.
+    // 같은 메뉴 항목으로 채팅 탭으로 되돌린다.
+    var listTable = findTable(in: list)
+    if listTable == nil, pressWindowMenuItem(["채팅", "Chats"]) {
+        for _ in 0..<20 {
+            usleep(150_000)
+            if let table = findTable(in: findListWindow() ?? list) { listTable = table; break }
+        }
     }
-    let keyboard = Keyboard(pid: pid, source: source)
+    guard let table = listTable else {
+        fail("채팅 목록을 찾지 못했습니다. 카카오톡에서 채팅 탭을 열어주세요.")
+    }
 
-    AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-    usleep(120_000)
-    keyboard.tap(aKey, flags: .maskCommand)
-    usleep(60_000)
-    keyboard.tap(deleteKey)
-    usleep(80_000)
-    keyboard.type(chat)
+    // 먼저 지금 보이는 행에서 찾고, 없으면 검색으로 좁힌다.
+    var usedSearch = false
+    var target = findRow(in: table, matching: chat)
 
-    // 검색 결과가 반영될 때까지 기다린다.
-    var target: AXUIElement?
-    for _ in 0..<25 {
+    if target == nil, let search = findSearchField(in: list) {
+        usedSearch = true
+        AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         usleep(120_000)
-        if let row = children(of: table).first(where: { row in
-            rowTexts(row).contains { $0.contains(chat) }
-        }) {
-            target = row
-            break
+        let current = stringValue(search)
+        var range = CFRange(location: 0, length: (current as NSString).length)
+        if let axRange = AXValueCreate(.cfRange, &range) {
+            AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
+        }
+        AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, chat as CFTypeRef)
+
+        for _ in 0..<25 {
+            usleep(120_000)
+            if let row = findRow(in: table, matching: chat) { target = row; break }
         }
     }
 
     guard let row = target else {
-        clearSearch(search, keyboard)
+        if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
         fail("'\(chat)' 채팅방을 목록에서 찾지 못했습니다")
     }
 
+    // Return 은 앱의 key window 로만 전달된다. 목록 창을 올려야 행 선택이 먹는다.
+    // 채팅방을 여는 동작이라 창이 앞으로 나오는 것은 자연스럽다. 앱 포커스는 뺏지 않는다.
+    AXUIElementSetAttributeValue(list, kAXMainAttribute as CFString, kCFBooleanTrue)
+    AXUIElementSetAttributeValue(list, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    usleep(200_000)
     AXUIElementSetAttributeValue(table, kAXSelectedRowsAttribute as CFString, [row] as CFArray)
-    usleep(120_000)
-    keyboard.tap(returnKey)
+    usleep(200_000)
 
-    // 채팅창이 실제로 뜰 때까지 기다린다.
+    if let source = CGEventSource(stateID: .combinedSessionState) {
+        Keyboard(pid: pid, source: source).tap(returnKey)
+    }
+
     var opened = false
     for _ in 0..<40 {
         usleep(150_000)
-        if openWindowTitles().contains(where: { $0.contains(chat) && !chatListWindowTitles.contains($0) }) {
-            opened = true
-            break
-        }
+        if case .found = matchChatWindow(named: chat) { opened = true; break }
     }
 
-    clearSearch(search, keyboard)
+    if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
     if !opened { fail("'\(chat)' 채팅창이 열리지 않았습니다") }
     print("opened")
     exit(0)
 }
 
 /// 검색어를 남겨두면 사용자가 카카오톡을 볼 때 목록이 걸러진 채로 보인다. 되돌려 놓는다.
-func clearSearch(_ search: AXUIElement, _ keyboard: Keyboard) {
-    AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-    usleep(80_000)
-    keyboard.tap(aKey, flags: .maskCommand)
-    usleep(50_000)
-    keyboard.tap(deleteKey)
-    usleep(50_000)
+func clearSearch(_ search: AXUIElement) {
+    let current = stringValue(search)
+    var range = CFRange(location: 0, length: (current as NSString).length)
+    if let axRange = AXValueCreate(.cfRange, &range) {
+        AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
+    }
+    AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, "" as CFTypeRef)
 }
 
 // MARK: - send
