@@ -22,6 +22,7 @@
 //   tkt-ax read <채팅방 이름> [개수]
 //   tkt-ax windows                      열려 있는 채팅창 목록
 //   tkt-ax open <채팅방 이름>            닫혀 있는 채팅방을 연다
+//   tkt-ax check                        접근성 권한·카카오톡 실행 여부를 진단한다
 
 import AppKit
 import ApplicationServices
@@ -164,11 +165,25 @@ struct Keyboard {
 
 // MARK: - 공통 준비
 
+let usage = "usage: tkt-ax send <chat> <message> | read <chat> [limit] | windows | open <chat> | check"
+
 let arguments = CommandLine.arguments
-guard arguments.count >= 2 else {
-    fail("usage: tkt-ax send <chat> <message> | read <chat> [limit] | windows")
-}
+guard arguments.count >= 2 else { fail(usage) }
 let command = arguments[1]
+
+// check 는 "무엇이 준비되지 않았는지" 를 알아내는 명령이다. 준비된 상태를 전제하는 아래
+// guard 들에 걸리면 안 되므로 가장 먼저 처리한다.
+if command == "check" {
+    // 권한이 없으면 시스템 다이얼로그를 띄운다. 손쉬운 사용 목록에 항목이 추가되므로
+    // 사용자는 설정에서 앱을 찾아 헤맬 필요 없이 토글만 켜면 된다.
+    let trusted = AXIsProcessTrustedWithOptions(
+        [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+    )
+    let running = NSWorkspace.shared.runningApplications
+        .contains { $0.bundleIdentifier == kakaoBundleID }
+    print("{\"trusted\":\(trusted),\"kakaoRunning\":\(running)}")
+    exit(0)
+}
 
 guard let kakao = NSWorkspace.shared.runningApplications
     .first(where: { $0.bundleIdentifier == kakaoBundleID })
@@ -178,8 +193,14 @@ else {
 let pid = kakao.processIdentifier
 let axApp = AXUIElementCreateApplication(pid)
 
-guard let windows = attribute(axApp, kAXWindowsAttribute as String) as? [AXUIElement] else {
-    fail("카카오톡 창 목록을 읽지 못했습니다. 손쉬운 사용 권한을 확인하세요.")
+// 권한이 없으면 AX API 가 통째로 막힌다. 창 목록 읽기 실패는 그 첫 증상이라, 여기서
+// 권한 문제와 그 밖의 문제를 갈라 안내한다.
+guard attribute(axApp, kAXWindowsAttribute as String) != nil else {
+    fail(
+        AXIsProcessTrusted()
+            ? "카카오톡 창 목록을 읽지 못했습니다."
+            : "터미널에 손쉬운 사용(Accessibility) 권한이 없습니다. `tkt` 를 다시 실행하면 안내가 나옵니다."
+    )
 }
 
 /// 지금 열려 있는 카카오톡 창들. 창은 명령 도중에도 늘어나므로 그때그때 다시 읽는다.
@@ -213,9 +234,7 @@ if command == "windows" {
     exit(0)
 }
 
-guard arguments.count >= 3 else {
-    fail("usage: tkt-ax send <chat> <message> | read <chat> [limit] | windows")
-}
+guard arguments.count >= 3 else { fail(usage) }
 let chatTitle = arguments[2]
 
 enum ChatWindowMatch {

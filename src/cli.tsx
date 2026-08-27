@@ -53,8 +53,14 @@ async function setup(): Promise<Config> {
 async function main() {
   const missing = await missingTools()
   if (missing.length > 0) {
-    console.error('다음이 준비되지 않았습니다:')
-    for (const item of missing) console.error(`  - ${item}`)
+    console.error('다음이 준비되지 않았습니다:\n')
+    for (const item of missing) {
+      // 안내가 여러 줄일 수 있다 (접근성 권한). 이어지는 줄은 들여써서 항목을 구분한다.
+      const [head, ...rest] = item.split('\n')
+      console.error(`  - ${head}`)
+      for (const line of rest) console.error(`    ${line}`)
+      console.error('')
+    }
     process.exit(1)
   }
 

@@ -102,8 +102,39 @@ export function sendMessage(chatName: string, text: string): Promise<void> {
   })
 }
 
-/** 준비되지 않은 항목을 안내 문구로 돌려준다. */
+/** `tkt-ax check` 가 돌려주는 준비 상태. */
+type Readiness = { trusted: boolean; kakaoRunning: boolean }
+
+const ACCESSIBILITY_HELP = [
+  '손쉬운 사용(Accessibility) 권한 — 지금 쓰는 터미널 앱에 권한이 없습니다.',
+  '방금 뜬 시스템 다이얼로그에서 「시스템 설정 열기」를 누르거나,',
+  '시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 이 터미널 앱을 켜세요.',
+  '권한은 터미널 앱마다 따로입니다 (Terminal, iTerm, VS Code 내장 터미널…).',
+  '켠 뒤에는 터미널을 완전히 종료했다 다시 열어야 반영됩니다.',
+].join('\n')
+
+const BUILD_HELP = 'native/tkt-ax — `npm run build:native` 로 빌드하세요 (Xcode Command Line Tools 필요)'
+
+/**
+ * 준비되지 않은 항목을 안내 문구로 돌려준다.
+ *
+ * 접근성 권한이 없으면 AX API 가 통째로 막혀서, 나중에 나오는 오류는 원인을 알려주지
+ * 않는다. 그래서 시작할 때 헬퍼에게 한 번 물어보고 여기서 걸러낸다.
+ */
 export async function missingTools(): Promise<string[]> {
-  if (existsSync(AX_HELPER)) return []
-  return ['native/tkt-ax — `yarn build:native` 로 빌드하세요 (Xcode Command Line Tools 필요)']
+  if (!existsSync(AX_HELPER)) return [BUILD_HELP]
+
+  let readiness: Readiness
+  try {
+    readiness = JSON.parse(await tktAx(['check'])) as Readiness
+  } catch {
+    return [BUILD_HELP]
+  }
+
+  const missing: string[] = []
+  if (!readiness.trusted) missing.push(ACCESSIBILITY_HELP)
+  if (!readiness.kakaoRunning) {
+    missing.push('카카오톡 Mac 앱 — 실행해 로그인하고, 쓰려는 채팅방 창을 열어두세요.')
+  }
+  return missing
 }
