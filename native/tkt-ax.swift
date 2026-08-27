@@ -525,14 +525,21 @@ func clearSearch(_ search: AXUIElement) {
 
 // MARK: - send
 
+/// 버튼에 붙은 이름들. 아이콘으로 그려진 버튼은 AXTitle 이 비어 있고 AXDescription 에만
+/// 이름이 있어서, 제목만 보면 「전송」 버튼을 놓친다.
+func buttonLabels(_ element: AXUIElement) -> [String] {
+    [kAXTitleAttribute as String, kAXDescriptionAttribute as String]
+        .compactMap { attribute(element, $0) as? String }
+        .filter { !$0.isEmpty }
+}
+
 /// 입력창 아래 「전송」 버튼. 있으면 키 이벤트 없이 보낼 수 있다.
 func findSendButton(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
     if depth > 14 { return nil }
     // 대화 내역 안에는 없다. 들어가면 탐색이 십수 초로 늘어난다.
     if isTranscriptArea(element) { return nil }
     if role(of: element) == "AXButton",
-       let title = attribute(element, kAXTitleAttribute as String) as? String,
-       sendButtonTitles.contains(title) {
+       buttonLabels(element).contains(where: { sendButtonTitles.contains($0) }) {
         return element
     }
     for child in children(of: element) {
@@ -545,14 +552,12 @@ func findSendButton(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
 ///
 /// 입력창의 기존 내용을 통째로 선택 범위로 잡고 `AXSelectedText` 로 치환한다. `AXValue` 를
 /// 직접 세팅하는 것과 달리 앱의 텍스트 시스템을 거치므로 카카오톡이 내용을 인식한다.
-/// 그 다음 「전송」 버튼을 누른다.
+/// 그 다음 「전송」 버튼을 찾아 누른다 — 버튼은 본문이 들어간 뒤에야 나타날 수 있다.
 ///
 /// 창을 key 로 올리지 않으므로 카카오톡 창이 다른 앱 위로 올라오지 않는다.
 /// 성공 여부는 반환값으로 알 수 없다 — 누르는 순간 입력창이 비면서 버튼이 재구성되는지
 /// AXPress 가 실패 코드를 돌려주기 때문이다. 그래서 입력창이 비워졌는지로 판정한다.
 func sendWithoutKeyboard(field: AXUIElement, window: AXUIElement, message: String) -> Bool {
-    guard let button = findSendButton(in: window) else { return false }
-
     let current = (attribute(field, kAXValueAttribute as String) as? String) ?? ""
     var range = CFRange(location: 0, length: (current as NSString).length)
     if let axRange = AXValueCreate(.cfRange, &range) {
@@ -567,6 +572,11 @@ func sendWithoutKeyboard(field: AXUIElement, window: AXUIElement, message: Strin
     guard (attribute(field, kAXValueAttribute as String) as? String) == message else {
         return false
     }
+
+    // 버튼은 본문을 넣은 뒤에 찾는다. 카카오톡은 입력창이 비어 있는 동안 전송 버튼을
+    // 그리지 않기도 해서, 먼저 찾으면 멀쩡한 창에서도 키보드 fallback 으로 떨어진다.
+    // 그 경로는 카카오톡 창을 앞으로 끌어올리므로 이 도구의 존재 이유가 날아간다.
+    guard let button = findSendButton(in: window) else { return false }
 
     AXUIElementPerformAction(button, kAXPressAction as CFString)
 
