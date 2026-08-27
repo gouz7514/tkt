@@ -51,7 +51,13 @@ async function setup(): Promise<Config> {
 }
 
 async function main() {
-  const missing = await missingTools()
+  // 진단은 보통 눈 깜짝할 새 끝난다. 오래 걸리면 헬퍼가 멈춘 것이므로, 빈 화면으로
+  // 기다리게 두지 말고 어느 단계에서 걸렸는지 알려준다.
+  const notice = setTimeout(() => {
+    console.error('준비 상태를 확인하는 중입니다… (오래 걸리면 다른 터미널에서 `npm run doctor`)')
+  }, 1_500)
+
+  const missing = await missingTools().finally(() => clearTimeout(notice))
   if (missing.length > 0) {
     console.error('다음이 준비되지 않았습니다:\n')
     for (const item of missing) {

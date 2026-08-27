@@ -37,9 +37,9 @@ function serialize<T>(task: () => Promise<T>): Promise<T> {
 // src/ 와 dist/ 모두 프로젝트 루트 한 단계 아래라 같은 경로로 해석된다.
 const AX_HELPER = fileURLToPath(new URL('../native/tkt-ax', import.meta.url))
 
-async function tktAx(args: string[]): Promise<string> {
+async function tktAx(args: string[], timeoutMs = 60_000): Promise<string> {
   const { stdout } = await run(AX_HELPER, args, {
-    timeout: 60_000,
+    timeout: timeoutMs,
     maxBuffer: 32 * 1024 * 1024,
     encoding: 'utf8',
   })
@@ -116,6 +116,28 @@ const ACCESSIBILITY_HELP = [
 const BUILD_HELP = 'native/tkt-ax — `npm run build:native` 로 빌드하세요 (Xcode Command Line Tools 필요)'
 
 /**
+ * 헬퍼는 있는데 진단이 실패했을 때의 안내.
+ *
+ * 예전에는 이 경우도 "빌드하세요" 로 뭉뚱그렸는데, 실제로는 헬퍼가 응답하지 않거나
+ * 실행 자체가 막힌 경우가 섞여 있어서 엉뚱한 곳을 보게 만들었다. 원인을 그대로 보여준다.
+ */
+function helperFailedHelp(error: unknown): string {
+  const killed = (error as { killed?: boolean }).killed === true
+  const stderr = ((error as { stderr?: string }).stderr ?? '').trim()
+  const reason = error instanceof Error ? error.message : String(error)
+
+  const lines = killed
+    ? ['native/tkt-ax — 헬퍼가 10초 안에 응답하지 않았습니다.']
+    : ['native/tkt-ax — 헬퍼를 실행하지 못했습니다.']
+
+  lines.push(`직접 실행해 무엇이 나오는지 확인하세요: ./native/tkt-ax check`)
+  lines.push(`자세한 진단: npm run doctor`)
+  if (stderr) lines.push(`헬퍼 출력: ${stderr}`)
+  else if (!killed) lines.push(`오류: ${reason}`)
+  return lines.join('\n')
+}
+
+/**
  * 준비되지 않은 항목을 안내 문구로 돌려준다.
  *
  * 접근성 권한이 없으면 AX API 가 통째로 막혀서, 나중에 나오는 오류는 원인을 알려주지
@@ -126,9 +148,10 @@ export async function missingTools(): Promise<string[]> {
 
   let readiness: Readiness
   try {
-    readiness = JSON.parse(await tktAx(['check'])) as Readiness
-  } catch {
-    return [BUILD_HELP]
+    // 진단 한 번에 10초를 넘길 이유가 없다. 넘긴다면 헬퍼가 멈춘 것이니 그렇게 알린다.
+    readiness = JSON.parse(await tktAx(['check'], 10_000)) as Readiness
+  } catch (error) {
+    return [helperFailedHelp(error)]
   }
 
   const missing: string[] = []

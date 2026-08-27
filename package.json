@@ -9,7 +9,8 @@
     "dev": "npm run build:native && tsx src/cli.tsx",
     "build": "npm run build:native && tsc",
     "start": "npm run build:native && node dist/cli.js",
-    "build:native": "swiftc -O native/tkt-ax.swift -o native/tkt-ax"
+    "build:native": "swiftc -O native/tkt-ax.swift -o native/tkt-ax",
+    "doctor": "bash scripts/doctor.sh"
   },
   "dependencies": {
     "ink": "^5.1.0",
