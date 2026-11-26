@@ -42,38 +42,18 @@ npm run dev
 
 ### 기본 터미널 선택
 
-`npm run launch -- --setup`으로 현재 터미널, macOS Terminal, iTerm2 중 하나를 고를 수 있어요.
-선택은 이 프로젝트의 로컬 `config.json`에 저장돼요. 설정이 없으면 현재 터미널을 사용해요.
-
-```bash
-npm run launch -- --setup iterm2
-npm run launch
-```
-
-Terminal 또는 iTerm2를 고르면 해당 앱의 기본 프로필로 새 창을 열어요.
-처음에는 macOS에서 앱 자동화 권한을 물을 수 있어요. 손쉬운 사용 권한은 tkt 화면이 열리는 터미널 앱에 필요해요.
-`npm run dev`는 현재 터미널에서 바로 실행해요.
+- `npm run launch -- --setup`으로 현재 터미널, macOS Terminal, iTerm2 중 하나를 고르고 `npm run launch`로 실행해요.
 
 ### 화면 설정
 
-처음 실행하면 Agnoster, Robbyrussell, Minimal을 미리 보고 선택할 수 있어요.
-실행 중에는 `Shift+Tab`으로 화면 설정을 열어요. `Tab`으로 다음 항목으로 이동하고 `↑`/`↓`로 값을 미리 봐요. `Enter`로 저장하고 `Esc`로 닫을 수 있어요.
-내 대화명 항목에서는 이름을 직접 입력해요. 기본값은 `me000`이고, 저장한 이름은 보낸 메시지의 프롬프트에 표시돼요.
-모든 테마에서 프롬프트 색상과 사용자명 색상을 고를 수 있어요. 프롬프트 색상은 Agnoster의 `tkt` 세그먼트, Robbyrussell의 `➜`, Minimal의 `tkt/`와 `»`에 적용돼요.
-프롬프트 기본색은 `black`이고, 사용자명 기본색은 연보라 `#C8B6FF`예요.
-두 색상 항목은 ANSI 프리셋을 제공해요. `↑`/`↓`로 `직접 입력`을 고르면 `#FFFFFF` 같은 6자리 색상 코드를 입력할 수 있어요.
-선택한 테마는 입력줄과 대화 기록에 바로 적용되고 다음 실행에도 유지돼요.
-
-Agnoster의 화살표는 Powerline 또는 Nerd Font에서 제대로 표시돼요.
-세 테마는 [Oh My Zsh의 프롬프트](https://github.com/ohmyzsh/ohmyzsh/wiki/Themes)를 참고했어요.
-
-사진, 이모티콘, 통화 같은 첨부 기록은 `Image`, `Emoji`, `Voice Call`처럼 표시해요.
-카카오톡의 접근성 정보에서 종류를 구분하기 어려운 카드는 `Attachment`로 표시해요.
-첨부 라벨 기본색은 Cyan이에요. 화면 설정에서 고른 강조색은 이전 첨부 기록에도 적용돼요.
+- 첫 실행 때 테마, 대화명, 색상을 고를 수 있어요. 실행 중에는 `Shift+Tab`으로 설정을 열어요.
+- `Tab`으로 항목을 이동하고 `↑`/`↓`로 값을 바꿔요. `Enter`로 저장하고 `Esc`로 닫아요.
+- 프롬프트와 사용자명 색상은 ANSI 프리셋이나 `#RRGGBB`로 지정해요. Agnoster의 화살표에는 Powerline 또는 Nerd Font가 필요해요.
+- 사진, 이모티콘, 통화는 `Image`, `Emoji`, `Voice Call` 등으로 표시해요. 화면 설정에서 첨부 강조색을 고를 수 있어요.
 
 #### 테마별 화면
 
-기본 색상과 예시 대화로 캡처한 화면이에요.
+세 테마는 [Oh My Zsh](https://github.com/ohmyzsh/ohmyzsh/wiki/Themes)를 참고했어요.
 
 <details>
 <summary>Agnoster</summary>
