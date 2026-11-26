@@ -20,6 +20,7 @@ export type Message = {
   author: string | null
   body: string
   mine: boolean
+  attachment?: boolean
 }
 
 /**
@@ -54,7 +55,9 @@ async function tktAx(args: string[], timeoutMs = 60_000): Promise<string> {
  */
 export async function listOpenChats(): Promise<string[]> {
   const out = await tktAx(['windows'])
-  return (JSON.parse(out).windows ?? []) as string[]
+  const chats: string[] = JSON.parse(out).windows ?? []
+  // 같은 제목의 창은 전송 대상을 구분할 수 없다.
+  return chats.filter((chat) => chats.indexOf(chat) === chats.lastIndexOf(chat))
 }
 
 /** 헬퍼가 "채팅창이 안 열려 있다"고 알려줄 때의 표식. */

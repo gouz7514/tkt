@@ -40,11 +40,10 @@ async function setup(): Promise<Config> {
   }
 
   const config: Config = {
+    ...(await loadConfig() ?? DEFAULTS),
     displayName: chosen,
-    pollIntervalMs: DEFAULTS.pollIntervalMs,
-    historyLimit: DEFAULTS.historyLimit,
   }
-  const path = await saveConfig(config)
+  const path = await saveConfig({ displayName: chosen })
   console.log(`\n✓ "${chosen}" 채팅방에 연결했습니다.`)
   console.log(`  설정 저장 위치: ${path}\n`)
   return config
@@ -73,11 +72,11 @@ async function main() {
   const command = process.argv[2]
 
   if (command === '--help' || command === '-h') {
-    console.log(`tkt — 터미널에서 카카오톡 채팅방 하나 주고받기
+    console.log(`tkt — 터미널에서 카카오톡 채팅방 보기
 
 사용법:
-  tkt           설정된 채팅방을 엽니다
-  tkt setup     대상 채팅방을 다시 고릅니다
+  tkt           카카오톡 채팅창 하나를 열고 ↓로 분할합니다
+  tkt setup     시작할 때 첫 칸에 표시할 채팅방을 고릅니다
 
 카카오톡에서 쓰려는 채팅방 창을 열어둔 상태여야 합니다.
 설정 파일: ${configPath}`)

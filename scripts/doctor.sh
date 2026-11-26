@@ -11,14 +11,14 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 step "macOS"
 sw_vers -productVersion
 
-step "Xcode 명령줄 도구 (없으면 여기서 설치 다이얼로그를 띄우고 멈춘다)"
+step "Xcode 명령줄 도구 (도구가 없으면 설치 안내가 표시됩니다)"
 if ! xcode-select -p; then
   echo "→ 명령줄 도구가 없습니다. xcode-select --install 로 설치한 뒤 다시 실행하세요."
   exit 1
 fi
 swiftc --version | head -1
 
-step "네이티브 헬퍼 빌드 (처음에는 모듈 캐시를 만드느라 수십 초 걸릴 수 있다)"
+step "네이티브 헬퍼 빌드 (처음에는 수십 초가 걸릴 수 있습니다)"
 time swiftc -O native/tkt-ax.swift -o native/tkt-ax || exit 1
 
 step "헬퍼 실행 — 접근성 권한과 카카오톡 실행 여부"
@@ -29,7 +29,7 @@ echo '  이 터미널 앱을 켜고, 터미널을 완전히 종료했다 다시 
 step "열려 있는 채팅창"
 ./native/tkt-ax windows
 
-step "Node 와 tsx (여기서 멈추면 의존성 설치가 덜 끝난 것이다)"
+step "Node와 tsx (여기서 멈추면 의존성 설치를 확인해 주세요)"
 node --version
 npx tsx --version
 

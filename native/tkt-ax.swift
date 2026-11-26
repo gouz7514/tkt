@@ -121,6 +121,7 @@ struct Message {
     var author: String?
     var body: String
     var mine: Bool
+    var attachment: Bool = false
 }
 
 func jsonEscape(_ s: String) -> String {
@@ -248,9 +249,12 @@ enum ChatWindowMatch {
 /// 정확히 일치하는 창을 먼저 보고, 없을 때만 부분 일치로 넓힌다. 부분 일치가 여럿이면
 /// 아무것도 고르지 않는다 — "김학재" 는 "김학재 가족방" 에도 걸리기 때문에, 그대로 두면
 /// 엉뚱한 방으로 메시지가 나간다. 읽기는 화면만 이상해지고 말지만 전송은 되돌릴 수 없다.
-func matchChatWindow(named name: String) -> ChatWindowMatch {
+func matchChatWindow(named name: String, exactOnly: Bool = false) -> ChatWindowMatch {
     let candidates = chatWindows()
-    if let exact = candidates.first(where: { $0.title == name }) { return .found(exact.element) }
+    let exact = candidates.filter { $0.title == name }
+    if exact.count > 1 { return .ambiguous(exact.map(\.title)) }
+    if let match = exact.first { return .found(match.element) }
+    if exactOnly { return .notOpen }
     let partial = candidates.filter { $0.title.contains(name) }
     if partial.count == 1 { return .found(partial[0].element) }
     if partial.count > 1 { return .ambiguous(partial.map(\.title)) }
@@ -265,7 +269,7 @@ func ambiguousMessage(_ name: String, _ matched: [String]) -> String {
 // open 은 채팅창이 아직 없는 상태에서 부르는 명령이므로 여기서 막지 않는다.
 // read/send 는 실제로 쓸 때 requireChatWindow() 로 확인한다.
 func requireChatWindow() -> AXUIElement {
-    switch matchChatWindow(named: chatTitle) {
+    switch matchChatWindow(named: chatTitle, exactOnly: true) {
     case .found(let window):
         return window
     case .ambiguous(let matched):
@@ -278,6 +282,171 @@ func requireChatWindow() -> AXUIElement {
 }
 
 // MARK: - read
+
+enum AttachmentKind: String {
+    case image = "Image"
+    case emoji = "Emoji"
+    case video = "Video"
+    case voiceCall = "Voice Call"
+    case videoCall = "Video Call"
+    case groupVoiceCall = "Group Voice Call"
+    case groupVideoCall = "Group Video Call"
+    case voiceMessage = "Voice Message"
+    case audio = "Audio"
+    case file = "File"
+    case location = "Location"
+    case contact = "Contact"
+    case link = "Link"
+    case gift = "Gift"
+    case payment = "Payment"
+    case poll = "Poll"
+    case event = "Event"
+    case attachment = "Attachment"
+
+    var isCall: Bool {
+        [.voiceCall, .videoCall, .groupVoiceCall, .groupVideoCall].contains(self)
+    }
+}
+
+struct Attachment {
+    let kind: AttachmentKind
+    let rect: CGRect
+    var count = 1
+    var missed = false
+
+    var label: String {
+        if missed { return "Missed \(kind.rawValue)" }
+        if count > 1 { return "\(kind.rawValue) ×\(count)" }
+        return kind.rawValue
+    }
+}
+
+struct AttachmentElement {
+    let role: String
+    let rect: CGRect
+    let labels: [String]
+
+    var isProfileButton: Bool {
+        role == "AXButton" && labels.contains { ["프로필", "profile"].contains($0) }
+    }
+}
+
+let attachmentHints: [(AttachmentKind, NSRegularExpression)] = [
+    (.groupVideoCall, #"그룹\s*페이스톡|\bgroup\s*(face\s*talk|video\s*call)\b"#),
+    (.groupVoiceCall, #"그룹\s*콜|\bgroup\s*(voice\s*)?call\b"#),
+    (.videoCall, #"페이스톡|영상\s*통화|\b(face\s*talk|video\s*call)\b"#),
+    (.voiceCall, #"보이스톡|음성\s*통화|\bvoice\s*(talk|call)\b"#),
+    (.voiceMessage, #"음성\s*(메시지|녹음)|\bvoice\s*(message|recording)\b|audiomessage"#),
+    (.emoji, #"이모티콘|이모지|스티커|\b(emoticon|emoji|sticker)\b|emoticonimage|stickerimage"#),
+    (.location, #"위치\s*(공유|전송|보기)|^위치$|지도\s*보기|\blocation\b|map\s*preview"#),
+    (.contact, #"연락처|프로필\s*공유|\bcontact\b|profile\s*share|\.vcf(?:$|[?#\s])"#),
+    (.gift, #"선물하기|선물(이 도착| 받기)|기프티콘|\bgift\b"#),
+    (.payment, #"송금|정산\s*(요청|하기)|\b(payment|money\s*transfer)\b"#),
+    (.poll, #"투표|\bpoll\b"#),
+    (.event, #"톡캘린더|일정\s*(공유|보기)|^일정$|\b(calendar|event)\b|\.ics(?:$|[?#\s])"#),
+    (.video, #"동영상|비디오|\b(video|movie)\b|videoplayer|videothumbnail|\.(mp4|m4v|mov|webm)(?:$|[?#\s])"#),
+    (.audio, #"\baudio\b|\.(mp3|m4a|wav|aac|ogg|flac)(?:$|[?#\s])"#),
+    (.image, #"사진|^이미지$|\bphoto\b|\.(png|jpe?g|heic|webp|gif)(?:$|[?#\s])"#),
+    (.file, #"파일|다운로드|\b(file|download)\b|\.(pdf|zip|txt|docx?|xlsx?|pptx?)(?:$|[?#\s])"#),
+    (.link, #"링크\s*(미리\s*보기|공유)|\blink\s*(preview|share)\b|urlpreview"#),
+].map { kind, pattern in
+    (kind, try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .anchorsMatchLines]))
+}
+
+func isPlaybackTime(_ text: String) -> Bool {
+    isClockText(text) || text.range(of: #"^\d{1,2}:\d{2}:\d{2}$"#, options: .regularExpression) != nil
+}
+
+func attachmentElements(
+    from element: AXUIElement, role elementRole: String, depth: Int = 0
+) -> [AttachmentElement] {
+    let mediaRoles = ["AXImage", "AXButton", "AXGroup", "AXLink", "AXVideo", "AXMovie", "AXAudio"]
+    if depth > 0 && elementRole == "AXStaticText" {
+        let label = stringValue(element)
+        guard !label.isEmpty else { return [] }
+        return [AttachmentElement(role: elementRole, rect: frame(of: element), labels: [label])]
+    }
+    guard mediaRoles.contains(elementRole) else { return [] }
+
+    let keys = ["AXDescription", "AXTitle", "AXHelp", "AXIdentifier", "AXSubrole", "AXURL", "AXFilename"]
+    var values: CFArray?
+    AXUIElementCopyMultipleAttributeValues(element, keys as CFArray, [], &values)
+    let labels = (values as? [Any] ?? []).compactMap { value -> String? in
+        (value as? String ?? (value as? URL)?.absoluteString)?.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let part = AttachmentElement(role: elementRole, rect: frame(of: element), labels: labels)
+    guard elementRole == "AXGroup", depth < 2 else { return [part] }
+    return [part] + children(of: element).flatMap {
+        attachmentElements(from: $0, role: role(of: $0), depth: depth + 1)
+    }
+}
+
+func classifyAttachment(
+    _ elements: [AttachmentElement], captions: [AttachmentElement], clockRects: [CGRect]
+) -> Attachment? {
+    let parts = elements.filter { !$0.isProfileButton }
+    let images = parts.filter { $0.role == "AXImage" }
+    let groups = parts.filter { $0.role == "AXGroup" }
+    let cardCaptions = captions.filter { caption in
+        // 이미지 위쪽의 발신자 이름은 카드 종류를 판정하는 데 쓰지 않는다.
+        (images + groups).contains { $0.rect.minY <= caption.rect.minY + 2 }
+    }
+    let labels = (parts + cardCaptions).flatMap(\.labels).joined(separator: "\n")
+
+    if let hint = attachmentHints.first(where: { _, pattern in
+        pattern.firstMatch(in: labels, range: NSRange(labels.startIndex..., in: labels)) != nil
+    }), let anchor = images.first ?? groups.first ?? parts.first {
+        let kind = hint.0
+        let rect = kind.isCall
+            ? cardCaptions.reduce(anchor.rect) { $0.union($1.rect) }
+            : anchor.rect
+        let missed = kind.isCall && labels.range(
+            of: #"부재중|응답\s*없음|\b(missed|no\s*answer)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        return Attachment(kind: kind, rect: rect, count: kind == .image ? max(1, images.count) : 1, missed: missed)
+    }
+
+    if let video = parts.first(where: { ["AXVideo", "AXMovie"].contains($0.role) }) {
+        return Attachment(kind: .video, rect: images.first?.rect ?? video.rect)
+    }
+    if let audio = parts.first(where: { $0.role == "AXAudio" }) {
+        return Attachment(kind: .audio, rect: audio.rect)
+    }
+    if let link = parts.first(where: { $0.role == "AXLink" && !$0.labels.isEmpty }) {
+        return Attachment(kind: .link, rect: groups.first?.rect ?? link.rect)
+    }
+    guard let image = images.first else {
+        return groups.first.map { Attachment(kind: .attachment, rect: $0.rect) }
+    }
+    // 썸네일 위의 재생 버튼과 길이만 사용한다. 말풍선 바깥의 전송 시각은 제외한다.
+    let playOverlay = parts.contains { part in
+        part.role == "AXButton" && !part.rect.isEmpty && image.rect.contains(part.rect)
+            && part.labels.contains { ["재생", "play"].contains($0) }
+    }
+    let nestedTimes = parts.filter { $0.role == "AXStaticText" && $0.labels.contains(where: isPlaybackTime) }
+    let isThumbnail = images.allSatisfy {
+        max($0.rect.width, $0.rect.height) >= 96 && min($0.rect.width, $0.rect.height) >= 36
+    }
+    if isThumbnail && (playOverlay || (clockRects + nestedTimes.map(\.rect)).contains(where: {
+        !$0.isEmpty && image.rect.contains($0)
+    })) {
+        return Attachment(kind: .video, rect: image.rect)
+    }
+
+    // 일부 카톡 이모티콘은 유형 정보 대신 122pt 크기의 그림 한 장으로 노출된다.
+    if images.count == 1 && groups.isEmpty && cardCaptions.isEmpty
+        && abs(image.rect.width - 122) < 1 && abs(image.rect.height - 122) < 1 {
+        return Attachment(kind: .emoji, rect: image.rect)
+    }
+
+    // 파일이나 통화 같은 카드의 작은 아이콘을 사진으로 오인하지 않는다.
+    if isThumbnail && cardCaptions.isEmpty {
+        return Attachment(kind: .image, rect: image.rect, count: images.count)
+    }
+    return Attachment(kind: .attachment, rect: groups.first?.rect ?? image.rect)
+}
 
 func runRead(limit: Int) -> Never {
     guard let scrollArea = findScrollArea(in: requireChatWindow()) else {
@@ -297,17 +466,24 @@ func runRead(limit: Int) -> Never {
         var time = ""
         var author: String?
         var bodies: [String] = []
-        var imageCount = 0
+        var candidates: [(AXUIElement, String)] = []
+        var staticLabels: [(value: String, element: AXUIElement)] = []
+        var clockLabels: [(value: String, element: AXUIElement)] = []
         var bubble: CGRect?
 
         for part in children(of: cell) {
-            switch role(of: part) {
+            let elementRole = role(of: part)
+            switch elementRole {
             case "AXStaticText":
                 let text = stringValue(part)
                 if isClockText(text) {
                     if time.isEmpty { time = text }
-                } else if !text.isEmpty, author == nil {
-                    author = text
+                    clockLabels.append((text, part))
+                } else if isPlaybackTime(text) {
+                    clockLabels.append(("", part))
+                } else if !text.isEmpty {
+                    staticLabels.append((text, part))
+                    if author == nil { author = text }
                 }
             case "AXTextArea":
                 let text = stringValue(part)
@@ -316,22 +492,41 @@ func runRead(limit: Int) -> Never {
                     if bubble == nil { bubble = frame(of: part) }
                 }
             case "AXImage":
-                imageCount += 1
+                candidates.append((part, elementRole))
                 if bubble == nil { bubble = frame(of: part) }
             default:
-                break
+                candidates.append((part, elementRole))
             }
         }
 
         var body = bodies.joined(separator: "\n")
+        var isAttachment = false
         if body.isEmpty {
-            // 본문 없이 이미지만 있는 행은 사진/이모티콘, 그 외(날짜 구분선 등)는 버린다.
-            guard imageCount > 0 else { continue }
-            body = imageCount > 1 ? "[사진 \(imageCount)장]" : "[사진]"
+            let elements = candidates.flatMap { attachmentElements(from: $0.0, role: $0.1) }
+            guard !elements.isEmpty else { continue }
+            let clockRects = clockLabels.map { frame(of: $0.element) }
+            let captions = staticLabels.map {
+                AttachmentElement(role: "AXStaticText", rect: frame(of: $0.element), labels: [$0.value])
+            }
+            guard let attachment = classifyAttachment(elements, captions: captions, clockRects: clockRects)
+            else { continue }
+            body = attachment.label
+            isAttachment = true
+            // 카드 설명을 발신자 이름으로 취급하지 않는다.
+            let authorCaption = captions.first
+            if let authorCaption, authorCaption.rect.minY >= attachment.rect.minY - 2 {
+                author = nil
+            }
+            bubble = attachment.rect
+            if attachment.kind == .video || attachment.kind.isCall {
+                time = zip(clockLabels, clockRects).first { label, rect in
+                    !label.value.isEmpty && (rect.isEmpty || !attachment.rect.contains(rect))
+                }?.0.value ?? ""
+            }
         }
 
         let mine = bubble.map { tableRight - $0.maxX < 40 } ?? true
-        messages.append(Message(time: time, author: author, body: body, mine: mine))
+        messages.append(Message(time: time, author: author, body: body, mine: mine, attachment: isAttachment))
     }
 
     // 카카오톡은 같은 분에 연속으로 오간 메시지를 묶어 마지막 행에만 시각을 표시한다.
@@ -350,7 +545,7 @@ func runRead(limit: Int) -> Never {
     out += tail.map { m in
         let authorField = m.author.map { "\"\(jsonEscape($0))\"" } ?? "null"
         return "{\"time\":\"\(jsonEscape(m.time))\",\"author\":\(authorField),"
-            + "\"body\":\"\(jsonEscape(m.body))\",\"mine\":\(m.mine)}"
+            + "\"body\":\"\(jsonEscape(m.body))\",\"mine\":\(m.mine),\"attachment\":\(m.attachment)}"
     }.joined(separator: ",")
     out += "]}"
     print(out)
@@ -615,15 +810,26 @@ func runSend(message: String) -> Never {
     AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     usleep(120_000)
 
+    func verifyFocus() {
+        guard let focusedWindow = attribute(axApp, kAXFocusedWindowAttribute as String),
+              let focusedField = attribute(axApp, kAXFocusedUIElementAttribute as String),
+              CFEqual(focusedWindow, window), CFEqual(focusedField, field) else {
+            fail("대상 채팅창에 입력 포커스를 확인하지 못해 전송을 중단했습니다")
+        }
+    }
+
     // 입력창에 남아 있던 내용을 먼저 비운다. AXValue 를 ""로 덮으면 앱 모델과 어긋나므로
     // 전체선택 후 삭제를 실제 키 이벤트로 보낸다.
+    verifyFocus()
     keyboard.tap(aKey, flags: .maskCommand)
     usleep(60_000)
     keyboard.tap(deleteKey)
     usleep(60_000)
 
+    verifyFocus()
     keyboard.type(message)
     usleep(250_000)
+    verifyFocus()
     keyboard.tap(returnKey)
 
     print("sent")
