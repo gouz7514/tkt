@@ -71,6 +71,38 @@ Agnoster의 화살표는 Powerline 또는 Nerd Font에서 제대로 표시돼요
 카카오톡의 접근성 정보에서 종류를 구분하기 어려운 카드는 `Attachment`로 표시해요.
 첨부 라벨 기본색은 Cyan이에요. 화면 설정에서 고른 강조색은 이전 첨부 기록에도 적용돼요.
 
+#### 테마별 화면
+
+기본 색상과 예시 대화로 캡처한 화면이에요.
+
+<details>
+<summary>Agnoster</summary>
+
+![Agnoster 테마의 대화 화면](docs/screenshots/agnoster.png)
+
+</details>
+
+<details>
+<summary>Robbyrussell</summary>
+
+![Robbyrussell 테마의 대화 화면](docs/screenshots/robbyrussell.png)
+
+</details>
+
+<details>
+<summary>Minimal</summary>
+
+![Minimal 테마의 대화 화면](docs/screenshots/minimal.png)
+
+</details>
+
+<details>
+<summary>화면 설정</summary>
+
+![테마와 색상을 고르는 화면 설정](docs/screenshots/settings.png)
+
+</details>
+
 ## 사용법
 
 기본 화면은 채팅방 한 칸이에요. `↓`를 누르면 새 칸과 방 선택 목록이 열려요. 방을 고른 뒤 `Enter`를 누르면 연결돼요.
