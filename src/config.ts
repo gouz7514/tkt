@@ -52,8 +52,8 @@ export const DEFAULTS = {
   pollIntervalMs: 1_000,
   historyLimit: 30,
   selfName: 'me000',
-  nameColor: 'blue' as const,
-  promptColor: 'default' as const,
+  nameColor: '#C8B6FF' as const,
+  promptColor: 'black' as const,
 }
 
 export function singleLineName(value: string): string {

@@ -132,7 +132,7 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
           <Text key={field} bold={selected}>
             {label}
             {field === 'promptTheme' ? promptThemes[draft.promptTheme] : (
-              draft[field] === 'default' ? '기본값' : (
+              draft[field] === 'default' ? '테마 기본값' : (
                 <Text color={draft[field] === 'black' ? 'gray' : draft[field]}>{draft[field]}</Text>
               )
             )}

@@ -78,12 +78,11 @@ export default function App({ config }: { config: Config }) {
   const [picking, setPicking] = useState<0 | 1 | null>(null)
   const [appearance, setAppearance] = useState<AppearanceSettings>(() => {
     const attachmentColor = config.attachmentColor ?? ansiColors[0]
-    const defaultNameColor = attachmentColor === 'blue' ? 'magenta' : DEFAULTS.nameColor
     return {
       promptTheme: config.promptTheme ?? 'agnoster',
       attachmentColor,
       selfName: config.selfName ?? DEFAULTS.selfName,
-      nameColor: config.nameColor && config.nameColor !== attachmentColor ? config.nameColor : defaultNameColor,
+      nameColor: config.nameColor && config.nameColor !== attachmentColor ? config.nameColor : DEFAULTS.nameColor,
       promptColor: config.promptColor ?? DEFAULTS.promptColor,
     }
   })

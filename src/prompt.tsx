@@ -19,6 +19,7 @@ function agnosterForeground(background: Exclude<AppearanceSettings['promptColor'
 function promptSegments(appearance: AppearanceSettings, label: string, active?: boolean): Segment[] {
   const { promptTheme, nameColor, promptColor } = appearance
   const customColor = promptColor === 'default' ? undefined : promptColor
+  const foregroundColor = customColor === 'black' ? 'gray' : customColor
   const marker = active === undefined ? '' : active ? '> ' : '  '
   switch (promptTheme) {
     case 'agnoster': {
@@ -33,14 +34,14 @@ function promptSegments(appearance: AppearanceSettings, label: string, active?: 
     case 'robbyrussell':
       return [
         { text: marker },
-        { text: '➜  ', color: customColor ?? 'green', bold: true },
+        { text: '➜  ', color: foregroundColor ?? 'green', bold: true },
         { text: `${label} `, color: nameColor },
       ]
     case 'minimal':
       return [
-        { text: `${marker}tkt/`, color: customColor },
+        { text: `${marker}tkt/`, color: foregroundColor },
         { text: label, color: nameColor },
-        { text: ' » ', color: customColor },
+        { text: ' » ', color: foregroundColor },
       ]
   }
 }
