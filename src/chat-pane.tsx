@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState, type ReactElement } from 'react'
 import { Box, Text } from 'ink'
-import TextInput from 'ink-text-input'
+import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
 import type { AppearanceSettings, Config } from './config.js'
-import { readMessages, sendMessage, type Message } from './kakao.js'
+import { displayChatTitle, readMessages, sendMessage, type Message } from './kakao.js'
+import { OriginalHeader, OriginalMessage, originalBodyWidth } from './original-theme.js'
 import ShellPrompt, { CommandText, promptText } from './prompt.js'
+import TextInput from './text-input.js'
 
 function visibleTranscript(
   messages: Message[],
@@ -14,6 +16,8 @@ function visibleTranscript(
   appearance: AppearanceSettings,
 ) {
   const { selfName } = appearance
+  const original = appearance.promptTheme === 'original'
+  const bodyWidth = original ? originalBodyWidth(columns) : columns
   const ownPrompt = promptText(appearance, selfName)
   const peerPrompt = promptText(appearance, 'peer')
   let previousMine: boolean | undefined
@@ -26,24 +30,22 @@ function visibleTranscript(
     previousMine = message.mine
     if (startsRun) previousAuthor = message.author
 
-    const timestamp = startsRun ? '' : `[${message.time || '--:--'}] `
+    const timestamp = original || startsRun ? '' : `[${message.time || '--:--'}] `
     const sending = message === pending
     const body = message.body + (sending ? ' …' : '')
-    const label = startsRun ? (message.mine ? selfName : 'peer') : undefined
-    const prefix = startsRun ? (message.mine ? ownPrompt : peerPrompt) : ''
-    const rows = wrapAnsi(timestamp + prefix + body, columns, { hard: true, trim: false }).split('\n').length
-    return { timestamp, body, label, attachment: message.attachment, sending, rows }
+    const label = !original && startsRun ? (message.mine ? selfName : 'peer') : undefined
+    const prefix = label === undefined ? '' : message.mine ? ownPrompt : peerPrompt
+    const rows = wrapAnsi(timestamp + prefix + body, bodyWidth, { hard: true, trim: false }).split('\n').length
+    return { ...message, timestamp, body, label, sending, rows }
   })
 
   let start = transcript.length
   let remaining = height
   while (start > 0 && remaining > 0) {
-    const rows = transcript[start - 1]!.rows
-    if (rows > remaining && start < transcript.length) break
     start -= 1
-    remaining -= rows
+    remaining -= transcript[start]!.rows
   }
-  return transcript.slice(start)
+  return { shown: transcript.slice(start), hiddenRows: Math.max(0, -remaining) }
 }
 
 function firstLine(error: unknown): string {
@@ -68,6 +70,7 @@ export default function ChatPane({
   const [readError, setReadError] = useState<string | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
   const [pending, setPending] = useState<Message | null>(null)
+  const [arrived, setArrived] = useState(false)
   const sending = useRef(false)
   const refresh = useRef<(() => void) | null>(null)
   const { historyLimit, pollIntervalMs } = config
@@ -76,12 +79,21 @@ export default function ChatPane({
     if (!room) return
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
+    let arrivedTimer: ReturnType<typeof setTimeout> | undefined
+    let previousTail: string | undefined
 
     const read = async () => {
       timer = undefined
       try {
         const next = await readMessages(room, historyLimit)
         if (!active) return
+        const tail = JSON.stringify([next.length, next.at(-1)])
+        if (previousTail !== undefined && tail !== previousTail && next.length > 0) {
+          setArrived(true)
+          clearTimeout(arrivedTimer)
+          arrivedTimer = setTimeout(() => setArrived(false), 4_000)
+        }
+        previousTail = tail
         setMessages(next)
         setReadError(null)
         if (!sending.current) setPending(null)
@@ -101,6 +113,7 @@ export default function ChatPane({
     return () => {
       active = false
       clearTimeout(timer)
+      clearTimeout(arrivedTimer)
       refresh.current = null
     }
   }, [room, historyLimit, pollIntervalMs])
@@ -109,7 +122,6 @@ export default function ChatPane({
     const text = value.trim()
     if (!room || !focused || picker || !text || sending.current) return
     sending.current = true
-    setInput('')
     setSendError(null)
     setPending({
       time: new Date().toTimeString().slice(0, 5),
@@ -120,11 +132,11 @@ export default function ChatPane({
 
     try {
       await sendMessage(room, text)
+      setInput((draft) => draft === value ? '' : draft)
       refresh.current?.()
     } catch (error) {
       setSendError(firstLine(error))
       setPending(null)
-      setInput((draft) => draft || value)
     } finally {
       sending.current = false
     }
@@ -132,19 +144,34 @@ export default function ChatPane({
 
   if (picker) return picker
 
+  const original = appearance.promptTheme === 'original'
+  const framed = original && height >= 5 && columns >= 20
   const error = sendError ?? readError
-  const messagesHeight = Math.max(0, height - (error ? 2 : 1))
+  const messagesHeight = Math.max(0, height - (framed ? 3 : 0) - (error ? 2 : 1))
+  const historyColumns = columns - (framed ? 4 : 0)
   const entries = pending ? [...(messages ?? []), pending] : messages ?? []
-  const shown = visibleTranscript(entries, pending, columns, messagesHeight, appearance)
+  const { shown, hiddenRows } = visibleTranscript(entries, pending, historyColumns, messagesHeight, appearance)
+  const roomLabel = displayChatTitle(room ?? '방 미선택')
+  const promptLabel = framed ? '' : roomLabel
+  const composerPadding = framed ? 1 : 0
+  const composerWidth = columns - 2 * composerPadding
+  const minInputWidth = room ? Math.max(4, Math.floor(columns / 4)) : 0
+  const promptWidth = Math.min(composerWidth - minInputWidth, stringWidth(promptText(appearance, promptLabel, focused)))
+  const inputWidth = composerWidth - promptWidth
+  const status = pending ? '전송 중…' : readError ? '연결 확인 필요' : !messages ? '대화 불러오는 중…'
+    : arrived ? '● 새 메시지' : '대기 중'
 
   return (
     <>
+      {framed && <OriginalHeader title={roomLabel} status={status} arrived={!pending && !readError && arrived} />}
       <Box
         flexDirection="column"
-        flexBasis={0}
-        flexGrow={1}
-        minHeight={1}
-        justifyContent="flex-end"
+        height={messagesHeight + (framed ? 2 : 0)}
+        flexShrink={0}
+        borderStyle={framed ? 'round' : undefined}
+        borderColor={framed ? 'gray' : undefined}
+        paddingX={framed ? 1 : 0}
+        justifyContent={original ? 'flex-start' : 'flex-end'}
         overflow="hidden"
       >
         {shown.length === 0 && (
@@ -153,32 +180,41 @@ export default function ChatPane({
               : messages || error ? '표시할 메시지 없음' : '불러오는 중…'}
           </Text>
         )}
-        {shown.map((entry, index) => (
-          <Text key={index}>
-            {entry.timestamp && <Text dimColor>{entry.timestamp}</Text>}
-            {entry.label !== undefined && (
-              <ShellPrompt appearance={appearance} label={entry.label} />
-            )}
-            <Text color={entry.attachment ? appearance.attachmentColor : undefined} dimColor={entry.sending}>
-              <CommandText body={entry.body} highlight={entry.label !== undefined && !entry.attachment} />
+        <Box flexDirection="column" flexShrink={0} marginTop={-hiddenRows}>
+          {shown.map((entry, index) => original ? (
+            <OriginalMessage key={index} appearance={appearance} columns={historyColumns} {...entry} />
+          ) : (
+            <Text key={index}>
+              {entry.timestamp && <Text dimColor>{entry.timestamp}</Text>}
+              {entry.label !== undefined && (
+                <ShellPrompt appearance={appearance} label={entry.label} />
+              )}
+              <Text color={entry.attachment ? appearance.attachmentColor : undefined} dimColor={entry.sending}>
+                <CommandText body={entry.body} highlight={entry.label !== undefined && !entry.attachment} />
+              </Text>
             </Text>
-          </Text>
-        ))}
+          ))}
+        </Box>
       </Box>
-      <Box minHeight={1} flexShrink={1} overflow="hidden">
-        <Box minWidth={0} flexShrink={1}>
+      <Box height={1} flexShrink={0} overflow="hidden" paddingX={composerPadding}>
+        <Box width={promptWidth} flexShrink={0}>
           <Text wrap="truncate-middle">
-            <ShellPrompt appearance={appearance} label={room ?? '방 미선택'} active={focused} />
+            <ShellPrompt appearance={appearance} label={promptLabel} active={focused} />
           </Text>
         </Box>
         {room && (
-          <Box flexGrow={1} flexShrink={0} flexBasis="24%">
-            <TextInput value={input} onChange={setInput} onSubmit={submit} focus={focused} />
-          </Box>
+            <TextInput
+              value={input}
+              onChange={setInput}
+              onSubmit={submit}
+              focus={focused}
+              width={inputWidth}
+              placeholder={original && focused ? '메시지를 입력하고 Enter' : undefined}
+            />
         )}
       </Box>
       {error && (
-        <Text wrap="truncate-end"><Text bold>오류 </Text>{error}</Text>
+        <Text color={original ? 'red' : undefined} wrap="truncate-end"><Text bold>오류 </Text>{error}</Text>
       )}
     </>
   )

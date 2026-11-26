@@ -22,6 +22,11 @@ function promptSegments(appearance: AppearanceSettings, label: string, active?: 
   const foregroundColor = customColor === 'black' ? 'gray' : customColor
   const marker = active === undefined ? '' : active ? '> ' : '  '
   switch (promptTheme) {
+    case 'original':
+      return [
+        { text: marker, color: customColor && customColor !== 'black' ? customColor : 'green' },
+        { text: label ? `${label} ` : '', color: 'yellow' },
+      ]
     case 'agnoster': {
       const contextColor = customColor ?? 'black'
       return [
@@ -46,8 +51,8 @@ function promptSegments(appearance: AppearanceSettings, label: string, active?: 
   }
 }
 
-export function promptText(appearance: AppearanceSettings, label: string): string {
-  return promptSegments(appearance, label).map(({ text }) => text).join('')
+export function promptText(appearance: AppearanceSettings, label: string, active?: boolean): string {
+  return promptSegments(appearance, label, active).map(({ text }) => text).join('')
 }
 
 export function CommandText({ body, highlight }: { body: string; highlight: boolean }) {

@@ -2,17 +2,18 @@ import React, { useEffect, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import ChatPane from './chat-pane.js'
 import { ansiColors, DEFAULTS, saveConfig, type AppearanceSettings, type Config } from './config.js'
-import { listOpenChats } from './kakao.js'
+import { displayChatTitle, listOpenChats } from './kakao.js'
 import AppearancePicker from './appearance-picker.js'
 
 type Rooms = [string | null, string | null]
 
 function RoomPicker({
-  current, other, height, onSelect,
+  current, other, height, enabled, onSelect,
 }: {
   current: string | null
   other: string | null
   height: number
+  enabled: boolean
   onSelect: (room: string) => void
 }) {
   const [rooms, setRooms] = useState<string[] | null>(null)
@@ -27,11 +28,14 @@ function RoomPicker({
         const chats = await listOpenChats()
         if (!active) return
         const choices = chats.filter((chat) => chat !== other)
+        setError(false)
         setRooms(choices)
         setSelected(Math.max(0, current ? choices.indexOf(current) : 0))
         if (!choices.length) retry = setTimeout(load, 1000)
       } catch {
-        if (active) setError(true)
+        if (!active) return
+        setError(true)
+        retry = setTimeout(load, 1000)
       }
     }
     void load()
@@ -42,11 +46,11 @@ function RoomPicker({
   }, [current, other])
 
   useInput((_input, key) => {
-    if (!rooms?.length) return
+    if (error || !rooms?.length) return
     if (key.upArrow) setSelected((index) => Math.max(0, index - 1))
     if (key.downArrow) setSelected((index) => Math.min(rooms.length - 1, index + 1))
     if (key.return) onSelect(rooms[selected]!)
-  })
+  }, { isActive: enabled })
 
   if (error) return <Text>채팅창 목록을 읽지 못했습니다.</Text>
   if (!rooms) return <Text dimColor>채팅창 확인 중…</Text>
@@ -61,7 +65,7 @@ function RoomPicker({
       {rooms.slice(start, start + limit).map((room, index) => (
         <Text key={room} bold={start + index === selected} wrap="truncate-end">
           {start + index === selected ? '> ' : '  '}
-          {room}
+          {displayChatTitle(room)}
           {room === current ? ' (현재)' : ''}
         </Text>
       ))}
@@ -79,7 +83,7 @@ export default function App({ config }: { config: Config }) {
   const [appearance, setAppearance] = useState<AppearanceSettings>(() => {
     const attachmentColor = config.attachmentColor ?? ansiColors[0]
     return {
-      promptTheme: config.promptTheme ?? 'agnoster',
+      promptTheme: config.promptTheme ?? 'original',
       attachmentColor,
       selfName: config.selfName ?? DEFAULTS.selfName,
       nameColor: config.nameColor && config.nameColor !== attachmentColor ? config.nameColor : DEFAULTS.nameColor,
@@ -111,8 +115,9 @@ export default function App({ config }: { config: Config }) {
 
   const split = rooms?.[1] != null || picking === 1
   const addingSecond = picking === 1 && rooms?.[1] == null
-  const bodyHeight = size.rows - 2
-  const fits = bodyHeight >= 5 && size.columns >= 30
+  const fits = size.rows >= 7 && size.columns >= 30
+  const bodyHeight = Math.max(5, size.rows - 2)
+  const bodyWidth = Math.max(30, size.columns)
 
   useInput((_input, key) => {
     if (appearanceOpen) return
@@ -145,13 +150,15 @@ export default function App({ config }: { config: Config }) {
   const horizontal = split && !stacked
   const vertical = split && stacked
   const firstHeight = vertical ? Math.floor((bodyHeight - 1) / 2) : bodyHeight
-  const firstWidth = horizontal ? Math.floor((size.columns - 1) / 2) : size.columns
+  const firstWidth = horizontal ? Math.floor((bodyWidth - 1) / 2) : bodyWidth
 
   return (
     <>
       {appearanceOpen && (
         <AppearancePicker
           appearance={appearance}
+          columns={size.columns}
+          rows={size.rows}
           onClose={() => setAppearanceOpen(false)}
           onSave={async (selection) => {
             await saveConfig(selection)
@@ -160,19 +167,19 @@ export default function App({ config }: { config: Config }) {
           }}
         />
       )}
-      {rooms && fits ? (
-        <Box flexDirection="column" display={appearanceOpen ? 'none' : 'flex'}>
+      {rooms && (
+        <Box flexDirection="column" display={appearanceOpen || !fits ? 'none' : 'flex'}>
           <Box height={bodyHeight} flexDirection={vertical ? 'column' : 'row'}>
             {rooms.slice(0, split ? 2 : 1).map((room, index) => {
               const active = index === (picking ?? focused)
               const paneHeight = vertical && index === 1 ? bodyHeight - firstHeight - 1 : firstHeight
-              const paneWidth = horizontal && index === 1 ? size.columns - firstWidth - 1 : firstWidth
+              const paneWidth = horizontal && index === 1 ? bodyWidth - firstWidth - 1 : firstWidth
               return (
                 <React.Fragment key={index}>
                   {index === 1 && (
                     <Box
                       height={vertical ? 1 : bodyHeight}
-                      width={vertical ? size.columns : 1}
+                      width={vertical ? bodyWidth : 1}
                       flexShrink={0}
                       borderStyle="single"
                       borderTop={false}
@@ -194,7 +201,7 @@ export default function App({ config }: { config: Config }) {
                     <ChatPane
                       key={room}
                       room={room}
-                      focused={active && !appearanceOpen}
+                      focused={active && fits && !appearanceOpen}
                       height={paneHeight}
                       columns={paneWidth - (horizontal ? 1 : 0)}
                       config={config}
@@ -205,6 +212,7 @@ export default function App({ config }: { config: Config }) {
                           current={room}
                           other={rooms[index === 0 ? 1 : 0]}
                           height={paneHeight}
+                          enabled={fits && !appearanceOpen}
                           onSelect={(next) => {
                             setRooms(index === 0 ? [next, rooms[1]] : [rooms[0], next])
                             setFocused(picking)
@@ -228,7 +236,8 @@ export default function App({ config }: { config: Config }) {
             </Text>
           )}
         </Box>
-      ) : !appearanceOpen && (
+      )}
+      {!appearanceOpen && (!rooms || !fits) && (
         <Text dimColor>{rooms ? '터미널 창을 넓혀 주세요. / Esc 종료' : '채팅창 확인 중…'}</Text>
       )}
     </>

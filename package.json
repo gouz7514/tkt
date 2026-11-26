@@ -9,15 +9,15 @@
   "scripts": {
     "dev": "npm run build:native && tsx src/cli.tsx",
     "build": "npm run build:native && tsc",
-    "start": "npm run build:native && node dist/cli.js",
+    "start": "npm run build && node dist/cli.js",
     "launch": "tsx src/launch.ts",
     "build:native": "swiftc -O native/tkt-ax.swift -o native/tkt-ax",
     "doctor": "bash scripts/doctor.sh"
   },
   "dependencies": {
     "ink": "^5.1.0",
-    "ink-text-input": "^6.0.0",
     "react": "^18.3.1",
+    "string-width": "^7.2.0",
     "wrap-ansi": "^9.0.2"
   },
   "devDependencies": {

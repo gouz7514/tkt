@@ -1,6 +1,8 @@
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 
 export type Config = {
   /** 카카오톡 채팅창 제목. 채팅방을 식별하는 유일한 키다. */
@@ -12,6 +14,7 @@ export type Config = {
 } & Partial<AppearanceSettings>
 
 export const promptThemes = {
+  original: 'Original',
   agnoster: 'Agnoster',
   robbyrussell: 'Robbyrussell',
   minimal: 'Minimal',
@@ -70,24 +73,41 @@ export function isTerminalApp(value: unknown): value is TerminalApp {
   return typeof value === 'string' && Object.hasOwn(terminalApps, value)
 }
 
-async function readConfig(): Promise<ConfigFile> {
+async function readConfig(): Promise<Record<string, unknown>> {
+  let raw: string
   try {
-    const parsed = JSON.parse(await readFile(FILE, 'utf8'))
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  } catch {
-    return {}
+    raw = await readFile(FILE, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw error
   }
+
+  const invalidFile = () => new Error(`설정 파일의 JSON 형식을 확인해 주세요. (${FILE})`)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw invalidFile()
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw invalidFile()
+  return parsed as Record<string, unknown>
+}
+
+function configInteger(value: unknown, minimum: number, fallback: number, maximum = Number.MAX_SAFE_INTEGER) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum
+    ? value
+    : fallback
 }
 
 export async function loadConfig(): Promise<Config | null> {
   const parsed = await readConfig()
-  if (!parsed.displayName) return null
+  if (typeof parsed.displayName !== 'string' || !parsed.displayName) return null
   return {
     displayName: parsed.displayName,
-    pollIntervalMs: parsed.pollIntervalMs ?? DEFAULTS.pollIntervalMs,
-    historyLimit: parsed.historyLimit ?? DEFAULTS.historyLimit,
+    pollIntervalMs: configInteger(parsed.pollIntervalMs, 1, DEFAULTS.pollIntervalMs, 2_147_483_647),
+    historyLimit: configInteger(parsed.historyLimit, 0, DEFAULTS.historyLimit),
     promptTheme: typeof parsed.promptTheme === 'string' && Object.hasOwn(promptThemes, parsed.promptTheme)
-      ? parsed.promptTheme
+      ? parsed.promptTheme as PromptTheme
       : undefined,
     attachmentColor: ansiColors.find((color) => color === parsed.attachmentColor),
     nameColor: parseHexColor(parsed.nameColor)
@@ -107,16 +127,38 @@ export async function loadTerminalApp(): Promise<TerminalApp> {
   return isTerminalApp(terminal) ? terminal : 'current'
 }
 
+async function lockConfig() {
+  // Darwin의 O_EXLOCK은 파일을 닫거나 프로세스가 끝나면 해제됩니다. Node는 이 상수를 제공하지 않습니다.
+  const O_EXLOCK = 0x20
+  const flags = constants.O_CREAT | constants.O_RDWR | constants.O_NONBLOCK | O_EXLOCK
+  const deadline = performance.now() + 5_000
+  // 설정 파일이 rename으로 교체되어도 모든 저장 작업이 같은 잠금 파일을 사용합니다.
+  while (true) {
+    try {
+      return await open(`${FILE}.lock.tmp`, flags, 0o600)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EAGAIN') throw error
+      if (performance.now() >= deadline) throw new Error('설정 파일이 사용 중입니다. 잠시 후 다시 시도해 주세요.')
+      await delay(50)
+    }
+  }
+}
+
 export async function saveConfig(changes: ConfigFile): Promise<string> {
-  const config = { ...await readConfig(), ...changes }
-  if (changes.nameColor !== undefined) delete config.agnosterColor
-  if (changes.promptColor !== undefined) delete config.agnosterContextColor
-  const temp = `${FILE}.${randomUUID()}.tmp`
+  const lock = await lockConfig()
   try {
-    await writeFile(temp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
-    await rename(temp, FILE)
+    const config = { ...await readConfig(), ...changes }
+    if (changes.nameColor !== undefined) delete config.agnosterColor
+    if (changes.promptColor !== undefined) delete config.agnosterContextColor
+    const temp = `${FILE}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
+      await rename(temp, FILE)
+    } finally {
+      await rm(temp, { force: true })
+    }
   } finally {
-    await rm(temp, { force: true })
+    await lock.close()
   }
   return FILE
 }

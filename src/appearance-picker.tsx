@@ -1,11 +1,13 @@
 import React, { useRef, useState } from 'react'
 import { Box, Text, useInput } from 'ink'
-import TextInput from 'ink-text-input'
+import stringWidth from 'string-width'
 import {
   ansiColors, DEFAULTS, parseHexColor, promptColors, promptThemes, singleLineName,
   type AppearanceSettings, type PromptTheme,
 } from './config.js'
+import { OriginalHeader, OriginalMessage } from './original-theme.js'
 import ShellPrompt, { CommandText } from './prompt.js'
+import TextInput from './text-input.js'
 
 const themes = Object.keys(promptThemes) as PromptTheme[]
 const fieldLabels: Record<keyof AppearanceSettings, string> = {
@@ -24,8 +26,10 @@ const fields = ['promptTheme', 'selfName', 'nameColor', 'promptColor', 'attachme
 const hexFields = ['nameColor', 'promptColor'] as const
 type HexField = typeof hexFields[number]
 
-export default function AppearancePicker({ appearance, onSave, onClose }: {
+export default function AppearancePicker({ appearance, columns, rows, onSave, onClose }: {
   appearance: AppearanceSettings
+  columns: number
+  rows: number
   onSave: (selection: AppearanceSettings) => Promise<void>
   onClose: () => void
 }) {
@@ -43,6 +47,9 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
     nameColor: parseHexColor(hexInputs.nameColor) ?? draft.nameColor,
     promptColor: parseHexColor(hexInputs.promptColor) ?? draft.promptColor,
   }
+  const original = preview.promptTheme === 'original'
+  const previewWidth = Math.min(52, columns)
+  const showPreview = columns >= 28 && rows >= (original ? 15 : 13) + Number(error !== null)
 
   useInput((_input, key) => {
     if (saving.current) return
@@ -94,7 +101,7 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
   return (
     <Box flexDirection="column">
       <Text bold>화면 설정</Text>
-      {fields.map((field) => {
+      {fields.filter((field) => rows >= (error ? 9 : 8) || field === focus).map((field) => {
         const selected = focus === field
         const label = `${selected ? '> ' : '  '}${fieldLabels[field]} `
         if (field === 'selfName') {
@@ -106,7 +113,7 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
                 onChange={(value) => setDraft((current) => ({ ...current, selfName: singleLineName(value) }))}
                 placeholder={DEFAULTS.selfName}
                 focus={selected}
-                showCursor={selected}
+                width={Math.max(1, columns - stringWidth(label))}
               />
             </Box>
           )
@@ -123,7 +130,7 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
                 }}
                 placeholder="#RRGGBB"
                 focus={selected}
-                showCursor={selected}
+                width={Math.max(1, columns - stringWidth(`${label}직접 입력 `))}
               />
             </Box>
           )
@@ -139,20 +146,35 @@ export default function AppearancePicker({ appearance, onSave, onClose }: {
           </Text>
         )
       })}
-      <Box marginTop={1} flexDirection="column">
+      {showPreview && <Box marginTop={1} flexDirection="column">
         <Text dimColor>미리 보기</Text>
-        <Text>
-          <ShellPrompt appearance={preview} label="peer" />
-          <CommandText body="check the notes" highlight />
-        </Text>
-        <Text><Text dimColor>[09:42] </Text><Text color={preview.attachmentColor}>Image</Text></Text>
-        <Text>
-          <ShellPrompt appearance={preview} label={preview.selfName} />
-          <CommandText body="open notes" highlight />
-        </Text>
-        <Text><ShellPrompt appearance={preview} label="room" active /></Text>
-      </Box>
-      <Box marginTop={1} flexDirection="column">
+        {original ? (
+          <Box flexDirection="column" width={previewWidth}>
+            <OriginalHeader title="room" status="대기 중" />
+            <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
+              <OriginalMessage appearance={preview} columns={previewWidth - 4} time="09:42" mine={false} body="Image" attachment />
+              <OriginalMessage appearance={preview} columns={previewWidth - 4} time="09:43" mine body="open notes" />
+            </Box>
+            <Box paddingX={1}>
+              <Text wrap="truncate-end"><ShellPrompt appearance={preview} label="" active />메시지를 입력하고 Enter</Text>
+            </Box>
+          </Box>
+        ) : (
+          <>
+            <Text>
+              <ShellPrompt appearance={preview} label="peer" />
+              <CommandText body="check the notes" highlight />
+            </Text>
+            <Text><Text dimColor>[09:42] </Text><Text color={preview.attachmentColor}>Image</Text></Text>
+            <Text>
+              <ShellPrompt appearance={preview} label={preview.selfName} />
+              <CommandText body="open notes" highlight />
+            </Text>
+            <Text><ShellPrompt appearance={preview} label="room" active /></Text>
+          </>
+        )}
+      </Box>}
+      <Box marginTop={showPreview && original ? 0 : 1} flexDirection="column">
         {error === 'hex' && <Text>색상 코드를 #RRGGBB 형식으로 입력해 주세요.</Text>}
         {error === 'save' && <Text>설정을 저장하지 못했습니다. Enter를 눌러 다시 시도해 주세요.</Text>}
         <Text dimColor>

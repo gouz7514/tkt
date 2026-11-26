@@ -39,9 +39,9 @@ let chatListWindowTitles = ["카카오톡", "KakaoTalk"]
 /// 입력창 아래 전송 버튼의 이름. 역시 UI 언어를 탄다.
 let sendButtonTitles = ["전송", "Send"]
 
-func fail(_ message: String) -> Never {
+func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
-    exit(1)
+    exit(status)
 }
 
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -98,16 +98,6 @@ func frame(of element: AXUIElement) -> CGRect {
 
 func stringValue(_ element: AXUIElement) -> String {
     (attribute(element, kAXValueAttribute as String) as? String) ?? ""
-}
-
-/// 첫 번째 AXScrollArea (대화 영역) 를 찾는다.
-func findScrollArea(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
-    if depth > 12 { return nil }
-    if role(of: element) == "AXScrollArea" { return element }
-    for child in children(of: element) {
-        if let found = findScrollArea(in: child, depth: depth + 1) { return found }
-    }
-    return nil
 }
 
 func isClockText(_ text: String) -> Bool {
@@ -171,6 +161,15 @@ let usage = "usage: tkt-ax send <chat> <message> | read <chat> [limit] | windows
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else { fail(usage) }
 let command = arguments[1]
+let readLimit: Int
+if command == "read", arguments.count >= 4 {
+    guard let limit = Int(arguments[3]), limit >= 0 else {
+        fail("읽을 메시지 수는 0 이상의 정수여야 합니다")
+    }
+    readLimit = limit
+} else {
+    readLimit = 30
+}
 
 // check 는 "무엇이 준비되지 않았는지" 를 알아내는 명령이다. 준비된 상태를 전제하는 아래
 // guard 들에 걸리면 안 되므로 가장 먼저 처리한다.
@@ -246,18 +245,11 @@ enum ChatWindowMatch {
 
 /// 제목으로 채팅창을 고른다.
 ///
-/// 정확히 일치하는 창을 먼저 보고, 없을 때만 부분 일치로 넓힌다. 부분 일치가 여럿이면
-/// 아무것도 고르지 않는다 — "김학재" 는 "김학재 가족방" 에도 걸리기 때문에, 그대로 두면
-/// 엉뚱한 방으로 메시지가 나간다. 읽기는 화면만 이상해지고 말지만 전송은 되돌릴 수 없다.
-func matchChatWindow(named name: String, exactOnly: Bool = false) -> ChatWindowMatch {
-    let candidates = chatWindows()
-    let exact = candidates.filter { $0.title == name }
+/// 부분 일치를 허용하면 이름이 비슷한 다른 방을 잘못 열 수 있다.
+func matchChatWindow(named name: String) -> ChatWindowMatch {
+    let exact = chatWindows().filter { $0.title == name }
     if exact.count > 1 { return .ambiguous(exact.map(\.title)) }
     if let match = exact.first { return .found(match.element) }
-    if exactOnly { return .notOpen }
-    let partial = candidates.filter { $0.title.contains(name) }
-    if partial.count == 1 { return .found(partial[0].element) }
-    if partial.count > 1 { return .ambiguous(partial.map(\.title)) }
     return .notOpen
 }
 
@@ -269,15 +261,13 @@ func ambiguousMessage(_ name: String, _ matched: [String]) -> String {
 // open 은 채팅창이 아직 없는 상태에서 부르는 명령이므로 여기서 막지 않는다.
 // read/send 는 실제로 쓸 때 requireChatWindow() 로 확인한다.
 func requireChatWindow() -> AXUIElement {
-    switch matchChatWindow(named: chatTitle, exactOnly: true) {
+    switch matchChatWindow(named: chatTitle) {
     case .found(let window):
         return window
     case .ambiguous(let matched):
-        // 이 문구에 kakao.ts 의 WINDOW_CLOSED 표식이 들어가면 안 된다. 들어가면 창이 닫힌
-        // 것으로 오해해 open 을 시도하고, 결국 아무 방이나 열어버린다.
         fail(ambiguousMessage(chatTitle, matched))
     case .notOpen:
-        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다. 열린 창: \(chatWindows().map(\.title))")
+        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다.", status: 3)
     }
 }
 
@@ -449,11 +439,8 @@ func classifyAttachment(
 }
 
 func runRead(limit: Int) -> Never {
-    guard let scrollArea = findScrollArea(in: requireChatWindow()) else {
+    guard let table = findTable(in: requireChatWindow()) else {
         fail("'\(chatTitle)' 채팅창에서 대화 영역을 찾지 못했습니다")
-    }
-    guard let table = children(of: scrollArea).first(where: { role(of: $0) == "AXTable" }) else {
-        fail("대화 목록(AXTable)을 찾지 못했습니다")
     }
 
     // 말풍선이 오른쪽 끝에 붙어 있으면 내가 보낸 것으로 본다.
@@ -605,21 +592,20 @@ func findTable(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
     return nil
 }
 
-func rowTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
-    if depth > 4 { return [] }
-    var out: [String] = []
+func rowTitle(_ element: AXUIElement, depth: Int = 0) -> String? {
+    if depth > 4 { return nil }
     if role(of: element) == "AXStaticText" {
         let text = stringValue(element)
-        if !text.isEmpty { out.append(text) }
+        if !text.isEmpty { return text }
     }
-    for child in children(of: element) { out += rowTexts(child, depth: depth + 1) }
-    return out
+    for child in children(of: element) {
+        if let title = rowTitle(child, depth: depth + 1) { return title }
+    }
+    return nil
 }
 
-func findRow(in table: AXUIElement, matching name: String) -> AXUIElement? {
-    children(of: table).first { row in
-        rowTexts(row).contains { $0.contains(name) }
-    }
+func matchingChatRows(in table: AXUIElement, named name: String) -> [AXUIElement] {
+    children(of: table).filter { role(of: $0) == "AXRow" && rowTitle($0) == name }
 }
 
 func runOpen(chat: String) -> Never {
@@ -658,29 +644,37 @@ func runOpen(chat: String) -> Never {
         fail("채팅 목록을 찾지 못했습니다. 카카오톡에서 채팅 탭을 열어주세요.")
     }
 
-    // 먼저 지금 보이는 행에서 찾고, 없으면 검색으로 좁힌다.
-    var usedSearch = false
-    var target = findRow(in: table, matching: chat)
-
-    if target == nil, let search = findSearchField(in: list) {
-        usedSearch = true
-        AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        usleep(120_000)
-        let current = stringValue(search)
-        var range = CFRange(location: 0, length: (current as NSString).length)
-        if let axRange = AXValueCreate(.cfRange, &range) {
-            AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
-        }
-        AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, chat as CFTypeRef)
-
-        for _ in 0..<25 {
-            usleep(120_000)
-            if let row = findRow(in: table, matching: chat) { target = row; break }
+    // 검색 결과에서 메시지 미리보기는 제외하고 정확한 제목만 비교한다.
+    var previousSearch: (field: AXUIElement, text: String)?
+    func restoreSearch() {
+        if let previousSearch {
+            _ = replaceText(in: previousSearch.field, with: previousSearch.text)
         }
     }
 
-    guard let row = target else {
-        if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
+    var matches = matchingChatRows(in: table, named: chat)
+    if matches.isEmpty, let search = findSearchField(in: list) {
+        previousSearch = (search, stringValue(search))
+        AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        usleep(120_000)
+        guard replaceText(in: search, with: chat) else {
+            restoreSearch()
+            fail("카카오톡 채팅 검색어를 입력하지 못했습니다")
+        }
+
+        for _ in 0..<25 {
+            usleep(120_000)
+            matches = matchingChatRows(in: table, named: chat)
+            if !matches.isEmpty { break }
+        }
+    }
+
+    guard matches.count <= 1 else {
+        restoreSearch()
+        fail("같은 이름의 '\(chat)' 채팅방이 여러 개 있습니다. 카카오톡에서 직접 열어주세요.")
+    }
+    guard let row = matches.first else {
+        restoreSearch()
         fail("'\(chat)' 채팅방을 목록에서 찾지 못했습니다")
     }
 
@@ -692,9 +686,15 @@ func runOpen(chat: String) -> Never {
     AXUIElementSetAttributeValue(table, kAXSelectedRowsAttribute as CFString, [row] as CFArray)
     usleep(200_000)
 
-    if let source = CGEventSource(stateID: .combinedSessionState) {
-        Keyboard(pid: pid, source: source).tap(returnKey)
+    guard let source = CGEventSource(stateID: .combinedSessionState),
+          let selected = attribute(table, kAXSelectedRowsAttribute as String) as? [AXUIElement],
+          selected.count == 1, selected.first.map({ CFEqual($0, row) }) == true,
+          let focusedWindow = attribute(axApp, kAXFocusedWindowAttribute as String),
+          CFEqual(focusedWindow, list) else {
+        restoreSearch()
+        fail("대상 채팅방 선택을 확인하지 못해 열기를 중단했습니다")
     }
+    Keyboard(pid: pid, source: source).tap(returnKey)
 
     var opened = false
     for _ in 0..<40 {
@@ -702,20 +702,23 @@ func runOpen(chat: String) -> Never {
         if case .found = matchChatWindow(named: chat) { opened = true; break }
     }
 
-    if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
+    restoreSearch()
     if !opened { fail("'\(chat)' 채팅창이 열리지 않았습니다") }
     print("opened")
     exit(0)
 }
 
-/// 검색어를 남겨두면 사용자가 카카오톡을 볼 때 목록이 걸러진 채로 보인다. 되돌려 놓는다.
-func clearSearch(_ search: AXUIElement) {
-    let current = stringValue(search)
-    var range = CFRange(location: 0, length: (current as NSString).length)
-    if let axRange = AXValueCreate(.cfRange, &range) {
-        AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
+func replaceText(in field: AXUIElement, with replacement: String) -> Bool {
+    guard let current = attribute(field, kAXValueAttribute as String) as? String else { return false }
+    if !current.isEmpty {
+        var range = CFRange(location: 0, length: (current as NSString).length)
+        guard let axRange = AXValueCreate(.cfRange, &range),
+              AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, axRange) == .success
+        else { return false }
     }
-    AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, "" as CFTypeRef)
+    return AXUIElementSetAttributeValue(
+        field, kAXSelectedTextAttribute as CFString, replacement as CFTypeRef
+    ) == .success
 }
 
 // MARK: - send
@@ -752,36 +755,30 @@ func findSendButton(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
 /// 창을 key 로 올리지 않으므로 카카오톡 창이 다른 앱 위로 올라오지 않는다.
 /// 성공 여부는 반환값으로 알 수 없다 — 누르는 순간 입력창이 비면서 버튼이 재구성되는지
 /// AXPress 가 실패 코드를 돌려주기 때문이다. 그래서 입력창이 비워졌는지로 판정한다.
-func sendWithoutKeyboard(field: AXUIElement, window: AXUIElement, message: String) -> Bool {
-    let current = (attribute(field, kAXValueAttribute as String) as? String) ?? ""
-    var range = CFRange(location: 0, length: (current as NSString).length)
-    if let axRange = AXValueCreate(.cfRange, &range) {
-        AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, axRange)
-    }
-
-    guard AXUIElementSetAttributeValue(
-        field, kAXSelectedTextAttribute as CFString, message as CFTypeRef
-    ) == .success else { return false }
+func pressSendButton(field: AXUIElement, window: AXUIElement, message: String) -> Bool {
+    guard replaceText(in: field, with: message) else { return false }
 
     usleep(150_000)
-    guard (attribute(field, kAXValueAttribute as String) as? String) == message else {
-        return false
-    }
 
     // 버튼은 본문을 넣은 뒤에 찾는다. 카카오톡은 입력창이 비어 있는 동안 전송 버튼을
     // 그리지 않기도 해서, 먼저 찾으면 멀쩡한 창에서도 키보드 fallback 으로 떨어진다.
     // 그 경로는 카카오톡 창을 앞으로 끌어올리므로 이 도구의 존재 이유가 날아간다.
-    guard let button = findSendButton(in: window) else { return false }
+    guard let button = findSendButton(in: window),
+          (attribute(field, kAXValueAttribute as String) as? String) == message else { return false }
 
     AXUIElementPerformAction(button, kAXPressAction as CFString)
+    return true
+}
 
+func confirmSend(field: AXUIElement) -> Never {
     for _ in 0..<20 {
         usleep(100_000)
-        if ((attribute(field, kAXValueAttribute as String) as? String) ?? "").isEmpty {
-            return true
+        if (attribute(field, kAXValueAttribute as String) as? String)?.isEmpty == true {
+            print("sent")
+            exit(0)
         }
     }
-    return false
+    fail("전송 결과를 확인하지 못했습니다. 카카오톡에서 확인해 주세요.")
 }
 
 func runSend(message: String) -> Never {
@@ -791,15 +788,14 @@ func runSend(message: String) -> Never {
     guard let field = findInputField(in: window) else {
         fail("'\(chatTitle)' 채팅창에서 입력창을 찾지 못했습니다")
     }
+    if pressSendButton(field: field, window: window, message: message) {
+        confirmSend(field: field)
+    }
+
     guard let source = CGEventSource(stateID: .combinedSessionState) else {
         fail("CGEventSource 를 만들지 못했습니다")
     }
     let keyboard = Keyboard(pid: pid, source: source)
-
-    if sendWithoutKeyboard(field: field, window: window, message: message) {
-        print("sent")
-        exit(0)
-    }
 
     // fallback: 「전송」 버튼을 못 찾았거나 치환이 안 먹은 경우. 실제 키 이벤트를 쓴다.
     // postToPid 로 보낸 키는 앱의 key window 로 가므로, 대상 창을 main 으로 올려야
@@ -823,17 +819,20 @@ func runSend(message: String) -> Never {
     verifyFocus()
     keyboard.tap(aKey, flags: .maskCommand)
     usleep(60_000)
+    verifyFocus()
     keyboard.tap(deleteKey)
     usleep(60_000)
 
     verifyFocus()
     keyboard.type(message)
     usleep(250_000)
+    guard (attribute(field, kAXValueAttribute as String) as? String) == message else {
+        fail("메시지 입력을 확인하지 못해 전송을 중단했습니다")
+    }
     verifyFocus()
     keyboard.tap(returnKey)
 
-    print("sent")
-    exit(0)
+    confirmSend(field: field)
 }
 
 switch command {
@@ -841,7 +840,7 @@ case "send":
     guard arguments.count >= 4 else { fail("usage: tkt-ax send <chat> <message>") }
     runSend(message: arguments[3])
 case "read":
-    runRead(limit: arguments.count >= 4 ? (Int(arguments[3]) ?? 30) : 30)
+    runRead(limit: readLimit)
 case "open":
     runOpen(chat: chatTitle)
 default:

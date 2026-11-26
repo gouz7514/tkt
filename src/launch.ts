@@ -31,8 +31,16 @@ async function configure(option?: string) {
       choices.forEach(([id, label], index) => {
         console.log(`${index + 1}. ${label}${id === current ? ' (현재)' : ''}`)
       })
-      const answer = (await rl.question('기본 터미널 번호 (Enter로 현재 설정 유지): ')).trim()
-      selection = answer === '' ? current : choices[Number(answer) - 1]?.[0]
+      rl.setPrompt('기본 터미널 번호 (Enter로 현재 설정 유지): ')
+      rl.prompt()
+      const { value, done } = await rl[Symbol.asyncIterator]().next()
+      if (done) throw new Error('기본 터미널 번호를 입력해 주세요.')
+      const answer = value.trim()
+      if (answer === '') {
+        console.log(`tkt 기본 터미널: ${terminalApps[await loadTerminalApp()]}`)
+        return
+      }
+      selection = choices[Number(answer) - 1]?.[0]
     } finally {
       rl.close()
     }

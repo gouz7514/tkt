@@ -46,14 +46,14 @@ npm run dev
 
 ### 화면 설정
 
-- 첫 실행 때 테마, 대화명, 색상을 고를 수 있어요. 실행 중에는 `Shift+Tab`으로 설정을 열어요.
+- 기본 테마는 기존 화면인 Original이에요. 첫 실행이나 `Shift+Tab`으로 열린 설정에서 테마, 대화명, 색상을 바꿀 수 있어요.
 - `Tab`으로 항목을 이동하고 `↑`/`↓`로 값을 바꿔요. `Enter`로 저장하고 `Esc`로 닫아요.
 - 프롬프트와 사용자명 색상은 ANSI 프리셋이나 `#RRGGBB`로 지정해요. Agnoster의 화살표에는 Powerline 또는 Nerd Font가 필요해요.
 - 사진, 이모티콘, 통화는 `Image`, `Emoji`, `Voice Call` 등으로 표시해요. 화면 설정에서 첨부 강조색을 고를 수 있어요.
 
 #### 테마별 화면
 
-세 테마는 [Oh My Zsh](https://github.com/ohmyzsh/ohmyzsh/wiki/Themes)를 참고했어요.
+맨 위 예시는 Original이에요. 추가 테마는 [Oh My Zsh](https://github.com/ohmyzsh/ohmyzsh/wiki/Themes)를 참고했어요.
 
 <details>
 <summary>Agnoster</summary>
