@@ -1,289 +1,245 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
-import TextInput from 'ink-text-input'
-import type { Config } from './config.js'
-import { listOpenChats, readMessages, sendMessage, type Message } from './kakao.js'
+import ChatPane from './chat-pane.js'
+import { ansiColors, DEFAULTS, saveConfig, type AppearanceSettings, type Config } from './config.js'
+import { displayChatTitle, listOpenChats } from './kakao.js'
+import AppearancePicker from './appearance-picker.js'
 
-type Row = {
-  key: string
-  time: string
-  author: string
-  body: string
-  mine: boolean
-  pending?: boolean
+type Rooms = [string | null, string | null]
+
+function RoomPicker({
+  current, other, height, enabled, onSelect,
+}: {
+  current: string | null
+  other: string | null
+  height: number
+  enabled: boolean
+  onSelect: (room: string) => void
+}) {
+  const [rooms, setRooms] = useState<string[] | null>(null)
+  const [selected, setSelected] = useState(0)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    let retry: ReturnType<typeof setTimeout> | undefined
+    const load = async () => {
+      try {
+        const chats = await listOpenChats()
+        if (!active) return
+        const choices = chats.filter((chat) => chat !== other)
+        setError(false)
+        setRooms(choices)
+        setSelected(Math.max(0, current ? choices.indexOf(current) : 0))
+        if (!choices.length) retry = setTimeout(load, 1000)
+      } catch {
+        if (!active) return
+        setError(true)
+        retry = setTimeout(load, 1000)
+      }
+    }
+    void load()
+    return () => {
+      active = false
+      clearTimeout(retry)
+    }
+  }, [current, other])
+
+  useInput((_input, key) => {
+    if (error || !rooms?.length) return
+    if (key.upArrow) setSelected((index) => Math.max(0, index - 1))
+    if (key.downArrow) setSelected((index) => Math.min(rooms.length - 1, index + 1))
+    if (key.return) onSelect(rooms[selected]!)
+  }, { isActive: enabled })
+
+  if (error) return <Text>채팅창 목록을 읽지 못했습니다.</Text>
+  if (!rooms) return <Text dimColor>채팅창 확인 중…</Text>
+  if (rooms.length === 0) return <Text dimColor>카카오톡에서 다른 채팅창을 열어주세요.</Text>
+
+  const limit = Math.max(1, height - 1)
+  const start = Math.min(Math.max(0, selected - limit + 1), Math.max(0, rooms.length - limit))
+
+  return (
+    <Box flexDirection="column" overflow="hidden">
+      <Text dimColor>방 선택</Text>
+      {rooms.slice(start, start + limit).map((room, index) => (
+        <Text key={room} bold={start + index === selected} wrap="truncate-end">
+          {start + index === selected ? '> ' : '  '}
+          {displayChatTitle(room)}
+          {room === current ? ' (현재)' : ''}
+        </Text>
+      ))}
+    </Box>
+  )
 }
-
-function toRow(m: Message, index: number): Row {
-  return {
-    key: `${index}:${m.time}|${m.author ?? ''}|${m.body}`,
-    time: m.time || '  :  ',
-    author: m.mine ? '나' : (m.author ?? '상대'),
-    body: m.body,
-    mine: m.mine,
-  }
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export default function App({ config }: { config: Config }) {
   const { exit } = useApp()
   const { stdout } = useStdout()
+  const [rooms, setRooms] = useState<Rooms | null>(null)
+  const [focused, setFocused] = useState<0 | 1>(0)
+  const [stacked, setStacked] = useState(false)
+  const [picking, setPicking] = useState<0 | 1 | null>(null)
+  const [appearance, setAppearance] = useState<AppearanceSettings>(() => {
+    const attachmentColor = config.attachmentColor ?? ansiColors[0]
+    return {
+      promptTheme: config.promptTheme ?? 'original',
+      attachmentColor,
+      selfName: config.selfName ?? DEFAULTS.selfName,
+      nameColor: config.nameColor && config.nameColor !== attachmentColor ? config.nameColor : DEFAULTS.nameColor,
+      promptColor: config.promptColor ?? DEFAULTS.promptColor,
+    }
+  })
+  const [appearanceOpen, setAppearanceOpen] = useState(config.promptTheme === undefined)
+  const [size, setSize] = useState(() => ({ rows: stdout.rows || 24, columns: stdout.columns || 80 }))
 
-  // 지금 보고 있는 채팅방. 설정값으로 시작하지만 Tab 으로 다른 열린 창으로 옮길 수 있다.
-  const [chatName, setChatName] = useState(config.displayName)
-  const [openChats, setOpenChats] = useState<string[]>([])
-  const [pickerIndex, setPickerIndex] = useState(0)
-  const [pickerOpen, setPickerOpen] = useState(false)
-
-  const [rows, setRows] = useState<Row[]>([])
-  const [pending, setPending] = useState<Row[]>([])
-  const [input, setInput] = useState('')
-  const [status, setStatus] = useState('연결 중…')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [arrived, setArrived] = useState(false)
-
-  const lastKey = useRef<string | null>(null)
-  // 폴링 루프를 깨워 즉시 한 번 더 읽게 하는 신호.
-  const wake = useRef<(() => void) | null>(null)
-
-  const refreshNow = useCallback(() => {
-    wake.current?.()
-  }, [])
-
-  // 시작할 때, 설정된 방의 창이 닫혀 있으면 지금 열려 있는 창으로 붙는다.
   useEffect(() => {
-    let cancelled = false
+    const resize = () => setSize({ rows: stdout.rows || 24, columns: stdout.columns || 80 })
+    stdout.on('resize', resize)
+    return () => { stdout.off('resize', resize) }
+  }, [stdout])
+
+  useEffect(() => {
+    let active = true
     listOpenChats()
       .then((chats) => {
-        if (cancelled) return
-        setOpenChats(chats)
-        if (chats.length === 0) return
-        if (!chats.some((c) => c.includes(config.displayName))) {
-          setChatName(chats[0]!)
-        }
+        if (!active) return
+        const first = chats.includes(config.displayName)
+          ? config.displayName
+          : chats[0] ?? null
+        setRooms([first, null])
       })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
+      .catch(() => { if (active) setRooms([null, null]) })
+    return () => { active = false }
   }, [config.displayName])
 
-  useEffect(() => {
-    // 이 플래그는 반드시 이펙트 안의 지역 변수여야 한다. ref 로 공유하면 방을 바꿀 때
-    // 정리 함수가 false 로 내려놓은 값을 곧바로 새 이펙트가 true 로 되돌려서, 이전 루프가
-    // 죽지 않고 계속 돈다. 그러면 두 루프가 번갈아 setRows 를 호출해 화면이 두 채팅방을
-    // 오간다.
-    let active = true
-
-    const loop = async () => {
-      let first = true
-      while (active) {
-        try {
-          setStatus(first ? '대화 불러오는 중…' : '새 메시지 확인 중…')
-          const messages = await readMessages(chatName, config.historyLimit)
-          if (!active) return
-
-          const next = messages.map(toRow)
-          const tail = next.at(-1)?.key ?? null
-          if (!first && tail && tail !== lastKey.current) {
-            setArrived(true)
-            setTimeout(() => setArrived(false), 4000)
-          }
-          lastKey.current = tail
-
-          setRows(next)
-          // 스냅샷이 갱신됐으니 낙관적으로 띄워둔 줄은 정리한다.
-          setPending([])
-          setError(null)
-          first = false
-        } catch (e) {
-          if (!active) return
-          setError(e instanceof Error ? e.message.split('\n')[0] : String(e))
-        }
-
-        setStatus('대기 중')
-        // 전송 직후에는 즉시 깨어나 다시 읽는다.
-        await Promise.race([
-          sleep(config.pollIntervalMs),
-          new Promise<void>((resolve) => {
-            wake.current = resolve
-          }),
-        ])
-        wake.current = null
-      }
-    }
-
-    void loop()
-    return () => {
-      active = false
-      wake.current?.()
-      // 방을 옮기면 이전 대화는 버린다.
-      lastKey.current = null
-      setRows([])
-      setPending([])
-    }
-  }, [chatName, config.historyLimit, config.pollIntervalMs])
+  const split = rooms?.[1] != null || picking === 1
+  const addingSecond = picking === 1 && rooms?.[1] == null
+  const fits = size.rows >= 7 && size.columns >= 30
+  const bodyHeight = Math.max(5, size.rows - 2)
+  const bodyWidth = Math.max(30, size.columns)
 
   useInput((_input, key) => {
-    if (pickerOpen) {
-      if (key.escape) {
-        setPickerOpen(false)
-        return
-      }
-      if (key.upArrow) {
-        setPickerIndex((i) => Math.max(0, i - 1))
-        return
-      }
-      if (key.downArrow) {
-        setPickerIndex((i) => Math.min(openChats.length - 1, i + 1))
-        return
-      }
-      if (key.return) {
-        const chosen = openChats[pickerIndex]
-        setPickerOpen(false)
-        if (chosen && chosen !== chatName) {
-          // 이전 방 내용은 여기서 같이 비운다. 이펙트 뒷정리에만 맡기면 방 이름이 먼저
-          // 바뀌고 목록이 나중에 지워져, 한 프레임 동안 새 방 이름 아래 이전 대화가 남는다.
-          setRows([])
-          setPending([])
-          lastKey.current = null
-          setChatName(chosen)
-        }
-      }
-      return
-    }
+    if (appearanceOpen) return
 
     if (key.tab) {
-      // 목록은 열 때마다 새로 읽는다. 그 사이 창이 열리거나 닫혔을 수 있다.
-      listOpenChats()
-        .then((chats) => {
-          if (chats.length === 0) {
-            setError('열려 있는 카카오톡 채팅창이 없습니다')
-            return
-          }
-          setOpenChats(chats)
-          setPickerIndex(Math.max(0, chats.indexOf(chatName)))
-          setPickerOpen(true)
-        })
-        .catch(() => setError('채팅창 목록을 읽지 못했습니다'))
+      if (key.shift) {
+        setPicking(null)
+        setAppearanceOpen(true)
+      } else if (!addingSecond) {
+        setPicking(null)
+        if (split) setFocused((index) => index === 0 ? 1 : 0)
+      }
       return
     }
 
     if (key.escape) {
-      exit()
+      if (picking !== null) setPicking(null)
+      else exit()
+      return
+    }
+
+    if (picking !== null || !rooms || !fits) return
+    if (key.upArrow) setPicking(focused)
+    if (key.downArrow) {
+      if (split) setStacked((value) => !value)
+      else setPicking(1)
     }
   })
 
-  const handleSubmit = async (value: string) => {
-    const text = value.trim()
-    if (!text || busy) return
-
-    setInput('')
-    setBusy(true)
-    setStatus('전송 중…')
-
-    const optimistic: Row = {
-      key: `pending:${Date.now()}`,
-      time: new Date().toTimeString().slice(0, 5),
-      author: '나',
-      body: text,
-      mine: true,
-      pending: true,
-    }
-    setPending((prev) => [...prev, optimistic])
-
-    try {
-      // 전송은 chat_id 가 아니라 화면에 보이는 채팅방 이름으로 대상을 찾는다.
-      await sendMessage(chatName, text)
-      setError(null)
-      refreshNow()
-    } catch (e) {
-      setError(e instanceof Error ? e.message.split('\n')[0] : String(e))
-      setPending((prev) => prev.filter((r) => r.key !== optimistic.key))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const terminalRows = stdout?.rows ?? 24
-  const visible = Math.max(5, terminalRows - 8)
-  const all = [...rows, ...pending]
-  const shown = all.slice(-visible)
+  const horizontal = split && !stacked
+  const vertical = split && stacked
+  const firstHeight = vertical ? Math.floor((bodyHeight - 1) / 2) : bodyHeight
+  const firstWidth = horizontal ? Math.floor((bodyWidth - 1) / 2) : bodyWidth
 
   return (
-    <Box flexDirection="column">
-      <Box justifyContent="space-between" paddingX={1}>
-        <Text bold color="yellow">
-          {chatName}
-        </Text>
-        <Text color={arrived ? 'green' : 'gray'}>
-          {arrived ? '● 새 메시지' : status}
-        </Text>
-      </Box>
-
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor="gray"
-        paddingX={1}
-        minHeight={visible + 2}
-      >
-        {shown.length === 0 ? (
-          <Text color="gray">아직 표시할 메시지가 없습니다.</Text>
-        ) : (
-          shown.map((row) => (
-            <Box key={row.key} flexDirection="row">
-              <Text color="gray">{row.time.padEnd(6)}</Text>
-              <Text color={row.mine ? 'cyan' : 'magenta'}>
-                {row.author.padEnd(6).slice(0, 6)}
-              </Text>
-              <Box flexGrow={1}>
-                <Text dimColor={row.pending} wrap="wrap">
-                  {row.body}
-                  {row.pending ? ' …' : ''}
-                </Text>
-              </Box>
-            </Box>
-          ))
-        )}
-      </Box>
-
-      {pickerOpen ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text bold color="yellow">
-            채팅방 전환 (↑↓ 이동, Enter 선택, Esc 취소)
-          </Text>
-          {openChats.map((name, i) => (
-            <Text key={name} color={i === pickerIndex ? 'yellow' : undefined}>
-              {i === pickerIndex ? '\u276f ' : '  '}
-              {name}
-              {name === chatName ? ' (현재)' : ''}
+    <>
+      {appearanceOpen && (
+        <AppearancePicker
+          appearance={appearance}
+          columns={size.columns}
+          rows={size.rows}
+          onClose={() => setAppearanceOpen(false)}
+          onSave={async (selection) => {
+            await saveConfig(selection)
+            setAppearance(selection)
+            setAppearanceOpen(false)
+          }}
+        />
+      )}
+      {rooms && (
+        <Box flexDirection="column" display={appearanceOpen || !fits ? 'none' : 'flex'}>
+          <Box height={bodyHeight} flexDirection={vertical ? 'column' : 'row'}>
+            {rooms.slice(0, split ? 2 : 1).map((room, index) => {
+              const active = index === (picking ?? focused)
+              const paneHeight = vertical && index === 1 ? bodyHeight - firstHeight - 1 : firstHeight
+              const paneWidth = horizontal && index === 1 ? bodyWidth - firstWidth - 1 : firstWidth
+              return (
+                <React.Fragment key={index}>
+                  {index === 1 && (
+                    <Box
+                      height={vertical ? 1 : bodyHeight}
+                      width={vertical ? bodyWidth : 1}
+                      flexShrink={0}
+                      borderStyle="single"
+                      borderTop={false}
+                      borderLeft={false}
+                      borderRight={horizontal}
+                      borderBottom={vertical}
+                      borderDimColor
+                    />
+                  )}
+                  <Box
+                    height={paneHeight}
+                    width={paneWidth}
+                    flexDirection="column"
+                    flexShrink={0}
+                    paddingLeft={index === 1 && horizontal ? 1 : 0}
+                    paddingRight={index === 0 && horizontal ? 1 : 0}
+                    overflow="hidden"
+                  >
+                    <ChatPane
+                      key={room}
+                      room={room}
+                      focused={active && fits && !appearanceOpen}
+                      height={paneHeight}
+                      columns={paneWidth - (horizontal ? 1 : 0)}
+                      config={config}
+                      appearance={appearance}
+                    >
+                      {picking === index && (
+                        <RoomPicker
+                          current={room}
+                          other={rooms[index === 0 ? 1 : 0]}
+                          height={paneHeight}
+                          enabled={fits && !appearanceOpen}
+                          onSelect={(next) => {
+                            setRooms(index === 0 ? [next, rooms[1]] : [rooms[0], next])
+                            setFocused(picking)
+                            setPicking(null)
+                          }}
+                        />
+                      )}
+                    </ChatPane>
+                  </Box>
+                </React.Fragment>
+              )
+            })}
+          </Box>
+          {picking !== null ? (
+            <Text dimColor>↑↓ 방 이동 / Enter 선택 / Esc 취소</Text>
+          ) : (
+            <Text dimColor wrap="truncate-end">
+              {split && 'Tab 칸 이동 / '}Shift+Tab 설정 / ↑ 방 선택 / ↓ {split
+                ? stacked ? '좌우 분할' : '상하 분할'
+                : '분할 후 방 선택'} / Enter 전송 / Esc 종료
             </Text>
-          ))}
-        </Box>
-      ) : (
-        <Box paddingX={1}>
-          <Text color={busy ? 'gray' : 'green'}>{busy ? '⋯ ' : '> '}</Text>
-          <TextInput
-            value={input}
-            onChange={setInput}
-            onSubmit={handleSubmit}
-            placeholder={busy ? '전송 중…' : '메시지를 입력하고 Enter'}
-            focus={!pickerOpen}
-          />
+          )}
         </Box>
       )}
-
-      {error ? (
-        <Box paddingX={1}>
-          <Text color="red">오류: {error}</Text>
-        </Box>
-      ) : (
-        <Box paddingX={1}>
-          <Text color="gray">Tab 채팅방 전환 · Esc 종료</Text>
-        </Box>
+      {!appearanceOpen && (!rooms || !fits) && (
+        <Text dimColor>{rooms ? '터미널 창을 넓혀 주세요. / Esc 종료' : '채팅창 확인 중…'}</Text>
       )}
-    </Box>
+    </>
   )
 }

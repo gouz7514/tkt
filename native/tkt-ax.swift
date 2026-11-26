@@ -39,9 +39,9 @@ let chatListWindowTitles = ["카카오톡", "KakaoTalk"]
 /// 입력창 아래 전송 버튼의 이름. 역시 UI 언어를 탄다.
 let sendButtonTitles = ["전송", "Send"]
 
-func fail(_ message: String) -> Never {
+func fail(_ message: String, status: Int32 = 1) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
-    exit(1)
+    exit(status)
 }
 
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -100,16 +100,6 @@ func stringValue(_ element: AXUIElement) -> String {
     (attribute(element, kAXValueAttribute as String) as? String) ?? ""
 }
 
-/// 첫 번째 AXScrollArea (대화 영역) 를 찾는다.
-func findScrollArea(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
-    if depth > 12 { return nil }
-    if role(of: element) == "AXScrollArea" { return element }
-    for child in children(of: element) {
-        if let found = findScrollArea(in: child, depth: depth + 1) { return found }
-    }
-    return nil
-}
-
 func isClockText(_ text: String) -> Bool {
     let parts = text.split(separator: ":")
     guard parts.count == 2, parts[0].count <= 2, parts[1].count == 2 else { return false }
@@ -121,6 +111,7 @@ struct Message {
     var author: String?
     var body: String
     var mine: Bool
+    var attachment: Bool = false
 }
 
 func jsonEscape(_ s: String) -> String {
@@ -170,6 +161,15 @@ let usage = "usage: tkt-ax send <chat> <message> | read <chat> [limit] | windows
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else { fail(usage) }
 let command = arguments[1]
+let readLimit: Int
+if command == "read", arguments.count >= 4 {
+    guard let limit = Int(arguments[3]), limit >= 0 else {
+        fail("읽을 메시지 수는 0 이상의 정수여야 합니다")
+    }
+    readLimit = limit
+} else {
+    readLimit = 30
+}
 
 // check 는 "무엇이 준비되지 않았는지" 를 알아내는 명령이다. 준비된 상태를 전제하는 아래
 // guard 들에 걸리면 안 되므로 가장 먼저 처리한다.
@@ -245,15 +245,11 @@ enum ChatWindowMatch {
 
 /// 제목으로 채팅창을 고른다.
 ///
-/// 정확히 일치하는 창을 먼저 보고, 없을 때만 부분 일치로 넓힌다. 부분 일치가 여럿이면
-/// 아무것도 고르지 않는다 — "김학재" 는 "김학재 가족방" 에도 걸리기 때문에, 그대로 두면
-/// 엉뚱한 방으로 메시지가 나간다. 읽기는 화면만 이상해지고 말지만 전송은 되돌릴 수 없다.
+/// 부분 일치를 허용하면 이름이 비슷한 다른 방을 잘못 열 수 있다.
 func matchChatWindow(named name: String) -> ChatWindowMatch {
-    let candidates = chatWindows()
-    if let exact = candidates.first(where: { $0.title == name }) { return .found(exact.element) }
-    let partial = candidates.filter { $0.title.contains(name) }
-    if partial.count == 1 { return .found(partial[0].element) }
-    if partial.count > 1 { return .ambiguous(partial.map(\.title)) }
+    let exact = chatWindows().filter { $0.title == name }
+    if exact.count > 1 { return .ambiguous(exact.map(\.title)) }
+    if let match = exact.first { return .found(match.element) }
     return .notOpen
 }
 
@@ -269,22 +265,182 @@ func requireChatWindow() -> AXUIElement {
     case .found(let window):
         return window
     case .ambiguous(let matched):
-        // 이 문구에 kakao.ts 의 WINDOW_CLOSED 표식이 들어가면 안 된다. 들어가면 창이 닫힌
-        // 것으로 오해해 open 을 시도하고, 결국 아무 방이나 열어버린다.
         fail(ambiguousMessage(chatTitle, matched))
     case .notOpen:
-        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다. 열린 창: \(chatWindows().map(\.title))")
+        fail("'\(chatTitle)' 채팅창이 열려 있지 않습니다.", status: 3)
     }
 }
 
 // MARK: - read
 
-func runRead(limit: Int) -> Never {
-    guard let scrollArea = findScrollArea(in: requireChatWindow()) else {
-        fail("'\(chatTitle)' 채팅창에서 대화 영역을 찾지 못했습니다")
+enum AttachmentKind: String {
+    case image = "Image"
+    case emoji = "Emoji"
+    case video = "Video"
+    case voiceCall = "Voice Call"
+    case videoCall = "Video Call"
+    case groupVoiceCall = "Group Voice Call"
+    case groupVideoCall = "Group Video Call"
+    case voiceMessage = "Voice Message"
+    case audio = "Audio"
+    case file = "File"
+    case location = "Location"
+    case contact = "Contact"
+    case link = "Link"
+    case gift = "Gift"
+    case payment = "Payment"
+    case poll = "Poll"
+    case event = "Event"
+    case attachment = "Attachment"
+
+    var isCall: Bool {
+        [.voiceCall, .videoCall, .groupVoiceCall, .groupVideoCall].contains(self)
     }
-    guard let table = children(of: scrollArea).first(where: { role(of: $0) == "AXTable" }) else {
-        fail("대화 목록(AXTable)을 찾지 못했습니다")
+}
+
+struct Attachment {
+    let kind: AttachmentKind
+    let rect: CGRect
+    var count = 1
+    var missed = false
+
+    var label: String {
+        if missed { return "Missed \(kind.rawValue)" }
+        if count > 1 { return "\(kind.rawValue) ×\(count)" }
+        return kind.rawValue
+    }
+}
+
+struct AttachmentElement {
+    let role: String
+    let rect: CGRect
+    let labels: [String]
+
+    var isProfileButton: Bool {
+        role == "AXButton" && labels.contains { ["프로필", "profile"].contains($0) }
+    }
+}
+
+let attachmentHints: [(AttachmentKind, NSRegularExpression)] = [
+    (.groupVideoCall, #"그룹\s*페이스톡|\bgroup\s*(face\s*talk|video\s*call)\b"#),
+    (.groupVoiceCall, #"그룹\s*콜|\bgroup\s*(voice\s*)?call\b"#),
+    (.videoCall, #"페이스톡|영상\s*통화|\b(face\s*talk|video\s*call)\b"#),
+    (.voiceCall, #"보이스톡|음성\s*통화|\bvoice\s*(talk|call)\b"#),
+    (.voiceMessage, #"음성\s*(메시지|녹음)|\bvoice\s*(message|recording)\b|audiomessage"#),
+    (.emoji, #"이모티콘|이모지|스티커|\b(emoticon|emoji|sticker)\b|emoticonimage|stickerimage"#),
+    (.location, #"위치\s*(공유|전송|보기)|^위치$|지도\s*보기|\blocation\b|map\s*preview"#),
+    (.contact, #"연락처|프로필\s*공유|\bcontact\b|profile\s*share|\.vcf(?:$|[?#\s])"#),
+    (.gift, #"선물하기|선물(이 도착| 받기)|기프티콘|\bgift\b"#),
+    (.payment, #"송금|정산\s*(요청|하기)|\b(payment|money\s*transfer)\b"#),
+    (.poll, #"투표|\bpoll\b"#),
+    (.event, #"톡캘린더|일정\s*(공유|보기)|^일정$|\b(calendar|event)\b|\.ics(?:$|[?#\s])"#),
+    (.video, #"동영상|비디오|\b(video|movie)\b|videoplayer|videothumbnail|\.(mp4|m4v|mov|webm)(?:$|[?#\s])"#),
+    (.audio, #"\baudio\b|\.(mp3|m4a|wav|aac|ogg|flac)(?:$|[?#\s])"#),
+    (.image, #"사진|^이미지$|\bphoto\b|\.(png|jpe?g|heic|webp|gif)(?:$|[?#\s])"#),
+    (.file, #"파일|다운로드|\b(file|download)\b|\.(pdf|zip|txt|docx?|xlsx?|pptx?)(?:$|[?#\s])"#),
+    (.link, #"링크\s*(미리\s*보기|공유)|\blink\s*(preview|share)\b|urlpreview"#),
+].map { kind, pattern in
+    (kind, try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .anchorsMatchLines]))
+}
+
+func isPlaybackTime(_ text: String) -> Bool {
+    isClockText(text) || text.range(of: #"^\d{1,2}:\d{2}:\d{2}$"#, options: .regularExpression) != nil
+}
+
+func attachmentElements(
+    from element: AXUIElement, role elementRole: String, depth: Int = 0
+) -> [AttachmentElement] {
+    let mediaRoles = ["AXImage", "AXButton", "AXGroup", "AXLink", "AXVideo", "AXMovie", "AXAudio"]
+    if depth > 0 && elementRole == "AXStaticText" {
+        let label = stringValue(element)
+        guard !label.isEmpty else { return [] }
+        return [AttachmentElement(role: elementRole, rect: frame(of: element), labels: [label])]
+    }
+    guard mediaRoles.contains(elementRole) else { return [] }
+
+    let keys = ["AXDescription", "AXTitle", "AXHelp", "AXIdentifier", "AXSubrole", "AXURL", "AXFilename"]
+    var values: CFArray?
+    AXUIElementCopyMultipleAttributeValues(element, keys as CFArray, [], &values)
+    let labels = (values as? [Any] ?? []).compactMap { value -> String? in
+        (value as? String ?? (value as? URL)?.absoluteString)?.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let part = AttachmentElement(role: elementRole, rect: frame(of: element), labels: labels)
+    guard elementRole == "AXGroup", depth < 2 else { return [part] }
+    return [part] + children(of: element).flatMap {
+        attachmentElements(from: $0, role: role(of: $0), depth: depth + 1)
+    }
+}
+
+func classifyAttachment(
+    _ elements: [AttachmentElement], captions: [AttachmentElement], clockRects: [CGRect]
+) -> Attachment? {
+    let parts = elements.filter { !$0.isProfileButton }
+    let images = parts.filter { $0.role == "AXImage" }
+    let groups = parts.filter { $0.role == "AXGroup" }
+    let cardCaptions = captions.filter { caption in
+        // 이미지 위쪽의 발신자 이름은 카드 종류를 판정하는 데 쓰지 않는다.
+        (images + groups).contains { $0.rect.minY <= caption.rect.minY + 2 }
+    }
+    let labels = (parts + cardCaptions).flatMap(\.labels).joined(separator: "\n")
+
+    if let hint = attachmentHints.first(where: { _, pattern in
+        pattern.firstMatch(in: labels, range: NSRange(labels.startIndex..., in: labels)) != nil
+    }), let anchor = images.first ?? groups.first ?? parts.first {
+        let kind = hint.0
+        let rect = kind.isCall
+            ? cardCaptions.reduce(anchor.rect) { $0.union($1.rect) }
+            : anchor.rect
+        let missed = kind.isCall && labels.range(
+            of: #"부재중|응답\s*없음|\b(missed|no\s*answer)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        return Attachment(kind: kind, rect: rect, count: kind == .image ? max(1, images.count) : 1, missed: missed)
+    }
+
+    if let video = parts.first(where: { ["AXVideo", "AXMovie"].contains($0.role) }) {
+        return Attachment(kind: .video, rect: images.first?.rect ?? video.rect)
+    }
+    if let audio = parts.first(where: { $0.role == "AXAudio" }) {
+        return Attachment(kind: .audio, rect: audio.rect)
+    }
+    if let link = parts.first(where: { $0.role == "AXLink" && !$0.labels.isEmpty }) {
+        return Attachment(kind: .link, rect: groups.first?.rect ?? link.rect)
+    }
+    guard let image = images.first else {
+        return groups.first.map { Attachment(kind: .attachment, rect: $0.rect) }
+    }
+    // 썸네일 위의 재생 버튼과 길이만 사용한다. 말풍선 바깥의 전송 시각은 제외한다.
+    let playOverlay = parts.contains { part in
+        part.role == "AXButton" && !part.rect.isEmpty && image.rect.contains(part.rect)
+            && part.labels.contains { ["재생", "play"].contains($0) }
+    }
+    let nestedTimes = parts.filter { $0.role == "AXStaticText" && $0.labels.contains(where: isPlaybackTime) }
+    let isThumbnail = images.allSatisfy {
+        max($0.rect.width, $0.rect.height) >= 96 && min($0.rect.width, $0.rect.height) >= 36
+    }
+    if isThumbnail && (playOverlay || (clockRects + nestedTimes.map(\.rect)).contains(where: {
+        !$0.isEmpty && image.rect.contains($0)
+    })) {
+        return Attachment(kind: .video, rect: image.rect)
+    }
+
+    // 일부 카톡 이모티콘은 유형 정보 대신 122pt 크기의 그림 한 장으로 노출된다.
+    if images.count == 1 && groups.isEmpty && cardCaptions.isEmpty
+        && abs(image.rect.width - 122) < 1 && abs(image.rect.height - 122) < 1 {
+        return Attachment(kind: .emoji, rect: image.rect)
+    }
+
+    // 파일이나 통화 같은 카드의 작은 아이콘을 사진으로 오인하지 않는다.
+    if isThumbnail && cardCaptions.isEmpty {
+        return Attachment(kind: .image, rect: image.rect, count: images.count)
+    }
+    return Attachment(kind: .attachment, rect: groups.first?.rect ?? image.rect)
+}
+
+func runRead(limit: Int) -> Never {
+    guard let table = findTable(in: requireChatWindow()) else {
+        fail("'\(chatTitle)' 채팅창에서 대화 영역을 찾지 못했습니다")
     }
 
     // 말풍선이 오른쪽 끝에 붙어 있으면 내가 보낸 것으로 본다.
@@ -297,17 +453,24 @@ func runRead(limit: Int) -> Never {
         var time = ""
         var author: String?
         var bodies: [String] = []
-        var imageCount = 0
+        var candidates: [(AXUIElement, String)] = []
+        var staticLabels: [(value: String, element: AXUIElement)] = []
+        var clockLabels: [(value: String, element: AXUIElement)] = []
         var bubble: CGRect?
 
         for part in children(of: cell) {
-            switch role(of: part) {
+            let elementRole = role(of: part)
+            switch elementRole {
             case "AXStaticText":
                 let text = stringValue(part)
                 if isClockText(text) {
                     if time.isEmpty { time = text }
-                } else if !text.isEmpty, author == nil {
-                    author = text
+                    clockLabels.append((text, part))
+                } else if isPlaybackTime(text) {
+                    clockLabels.append(("", part))
+                } else if !text.isEmpty {
+                    staticLabels.append((text, part))
+                    if author == nil { author = text }
                 }
             case "AXTextArea":
                 let text = stringValue(part)
@@ -316,22 +479,41 @@ func runRead(limit: Int) -> Never {
                     if bubble == nil { bubble = frame(of: part) }
                 }
             case "AXImage":
-                imageCount += 1
+                candidates.append((part, elementRole))
                 if bubble == nil { bubble = frame(of: part) }
             default:
-                break
+                candidates.append((part, elementRole))
             }
         }
 
         var body = bodies.joined(separator: "\n")
+        var isAttachment = false
         if body.isEmpty {
-            // 본문 없이 이미지만 있는 행은 사진/이모티콘, 그 외(날짜 구분선 등)는 버린다.
-            guard imageCount > 0 else { continue }
-            body = imageCount > 1 ? "[사진 \(imageCount)장]" : "[사진]"
+            let elements = candidates.flatMap { attachmentElements(from: $0.0, role: $0.1) }
+            guard !elements.isEmpty else { continue }
+            let clockRects = clockLabels.map { frame(of: $0.element) }
+            let captions = staticLabels.map {
+                AttachmentElement(role: "AXStaticText", rect: frame(of: $0.element), labels: [$0.value])
+            }
+            guard let attachment = classifyAttachment(elements, captions: captions, clockRects: clockRects)
+            else { continue }
+            body = attachment.label
+            isAttachment = true
+            // 카드 설명을 발신자 이름으로 취급하지 않는다.
+            let authorCaption = captions.first
+            if let authorCaption, authorCaption.rect.minY >= attachment.rect.minY - 2 {
+                author = nil
+            }
+            bubble = attachment.rect
+            if attachment.kind == .video || attachment.kind.isCall {
+                time = zip(clockLabels, clockRects).first { label, rect in
+                    !label.value.isEmpty && (rect.isEmpty || !attachment.rect.contains(rect))
+                }?.0.value ?? ""
+            }
         }
 
         let mine = bubble.map { tableRight - $0.maxX < 40 } ?? true
-        messages.append(Message(time: time, author: author, body: body, mine: mine))
+        messages.append(Message(time: time, author: author, body: body, mine: mine, attachment: isAttachment))
     }
 
     // 카카오톡은 같은 분에 연속으로 오간 메시지를 묶어 마지막 행에만 시각을 표시한다.
@@ -350,7 +532,7 @@ func runRead(limit: Int) -> Never {
     out += tail.map { m in
         let authorField = m.author.map { "\"\(jsonEscape($0))\"" } ?? "null"
         return "{\"time\":\"\(jsonEscape(m.time))\",\"author\":\(authorField),"
-            + "\"body\":\"\(jsonEscape(m.body))\",\"mine\":\(m.mine)}"
+            + "\"body\":\"\(jsonEscape(m.body))\",\"mine\":\(m.mine),\"attachment\":\(m.attachment)}"
     }.joined(separator: ",")
     out += "]}"
     print(out)
@@ -410,21 +592,20 @@ func findTable(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
     return nil
 }
 
-func rowTexts(_ element: AXUIElement, depth: Int = 0) -> [String] {
-    if depth > 4 { return [] }
-    var out: [String] = []
+func rowTitle(_ element: AXUIElement, depth: Int = 0) -> String? {
+    if depth > 4 { return nil }
     if role(of: element) == "AXStaticText" {
         let text = stringValue(element)
-        if !text.isEmpty { out.append(text) }
+        if !text.isEmpty { return text }
     }
-    for child in children(of: element) { out += rowTexts(child, depth: depth + 1) }
-    return out
+    for child in children(of: element) {
+        if let title = rowTitle(child, depth: depth + 1) { return title }
+    }
+    return nil
 }
 
-func findRow(in table: AXUIElement, matching name: String) -> AXUIElement? {
-    children(of: table).first { row in
-        rowTexts(row).contains { $0.contains(name) }
-    }
+func matchingChatRows(in table: AXUIElement, named name: String) -> [AXUIElement] {
+    children(of: table).filter { role(of: $0) == "AXRow" && rowTitle($0) == name }
 }
 
 func runOpen(chat: String) -> Never {
@@ -463,29 +644,37 @@ func runOpen(chat: String) -> Never {
         fail("채팅 목록을 찾지 못했습니다. 카카오톡에서 채팅 탭을 열어주세요.")
     }
 
-    // 먼저 지금 보이는 행에서 찾고, 없으면 검색으로 좁힌다.
-    var usedSearch = false
-    var target = findRow(in: table, matching: chat)
-
-    if target == nil, let search = findSearchField(in: list) {
-        usedSearch = true
-        AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        usleep(120_000)
-        let current = stringValue(search)
-        var range = CFRange(location: 0, length: (current as NSString).length)
-        if let axRange = AXValueCreate(.cfRange, &range) {
-            AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
-        }
-        AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, chat as CFTypeRef)
-
-        for _ in 0..<25 {
-            usleep(120_000)
-            if let row = findRow(in: table, matching: chat) { target = row; break }
+    // 검색 결과에서 메시지 미리보기는 제외하고 정확한 제목만 비교한다.
+    var previousSearch: (field: AXUIElement, text: String)?
+    func restoreSearch() {
+        if let previousSearch {
+            _ = replaceText(in: previousSearch.field, with: previousSearch.text)
         }
     }
 
-    guard let row = target else {
-        if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
+    var matches = matchingChatRows(in: table, named: chat)
+    if matches.isEmpty, let search = findSearchField(in: list) {
+        previousSearch = (search, stringValue(search))
+        AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        usleep(120_000)
+        guard replaceText(in: search, with: chat) else {
+            restoreSearch()
+            fail("카카오톡 채팅 검색어를 입력하지 못했습니다")
+        }
+
+        for _ in 0..<25 {
+            usleep(120_000)
+            matches = matchingChatRows(in: table, named: chat)
+            if !matches.isEmpty { break }
+        }
+    }
+
+    guard matches.count <= 1 else {
+        restoreSearch()
+        fail("같은 이름의 '\(chat)' 채팅방이 여러 개 있습니다. 카카오톡에서 직접 열어주세요.")
+    }
+    guard let row = matches.first else {
+        restoreSearch()
         fail("'\(chat)' 채팅방을 목록에서 찾지 못했습니다")
     }
 
@@ -497,9 +686,15 @@ func runOpen(chat: String) -> Never {
     AXUIElementSetAttributeValue(table, kAXSelectedRowsAttribute as CFString, [row] as CFArray)
     usleep(200_000)
 
-    if let source = CGEventSource(stateID: .combinedSessionState) {
-        Keyboard(pid: pid, source: source).tap(returnKey)
+    guard let source = CGEventSource(stateID: .combinedSessionState),
+          let selected = attribute(table, kAXSelectedRowsAttribute as String) as? [AXUIElement],
+          selected.count == 1, selected.first.map({ CFEqual($0, row) }) == true,
+          let focusedWindow = attribute(axApp, kAXFocusedWindowAttribute as String),
+          CFEqual(focusedWindow, list) else {
+        restoreSearch()
+        fail("대상 채팅방 선택을 확인하지 못해 열기를 중단했습니다")
     }
+    Keyboard(pid: pid, source: source).tap(returnKey)
 
     var opened = false
     for _ in 0..<40 {
@@ -507,20 +702,23 @@ func runOpen(chat: String) -> Never {
         if case .found = matchChatWindow(named: chat) { opened = true; break }
     }
 
-    if usedSearch, let search = findSearchField(in: list) { clearSearch(search) }
+    restoreSearch()
     if !opened { fail("'\(chat)' 채팅창이 열리지 않았습니다") }
     print("opened")
     exit(0)
 }
 
-/// 검색어를 남겨두면 사용자가 카카오톡을 볼 때 목록이 걸러진 채로 보인다. 되돌려 놓는다.
-func clearSearch(_ search: AXUIElement) {
-    let current = stringValue(search)
-    var range = CFRange(location: 0, length: (current as NSString).length)
-    if let axRange = AXValueCreate(.cfRange, &range) {
-        AXUIElementSetAttributeValue(search, kAXSelectedTextRangeAttribute as CFString, axRange)
+func replaceText(in field: AXUIElement, with replacement: String) -> Bool {
+    guard let current = attribute(field, kAXValueAttribute as String) as? String else { return false }
+    if !current.isEmpty {
+        var range = CFRange(location: 0, length: (current as NSString).length)
+        guard let axRange = AXValueCreate(.cfRange, &range),
+              AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, axRange) == .success
+        else { return false }
     }
-    AXUIElementSetAttributeValue(search, kAXSelectedTextAttribute as CFString, "" as CFTypeRef)
+    return AXUIElementSetAttributeValue(
+        field, kAXSelectedTextAttribute as CFString, replacement as CFTypeRef
+    ) == .success
 }
 
 // MARK: - send
@@ -557,36 +755,30 @@ func findSendButton(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
 /// 창을 key 로 올리지 않으므로 카카오톡 창이 다른 앱 위로 올라오지 않는다.
 /// 성공 여부는 반환값으로 알 수 없다 — 누르는 순간 입력창이 비면서 버튼이 재구성되는지
 /// AXPress 가 실패 코드를 돌려주기 때문이다. 그래서 입력창이 비워졌는지로 판정한다.
-func sendWithoutKeyboard(field: AXUIElement, window: AXUIElement, message: String) -> Bool {
-    let current = (attribute(field, kAXValueAttribute as String) as? String) ?? ""
-    var range = CFRange(location: 0, length: (current as NSString).length)
-    if let axRange = AXValueCreate(.cfRange, &range) {
-        AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, axRange)
-    }
-
-    guard AXUIElementSetAttributeValue(
-        field, kAXSelectedTextAttribute as CFString, message as CFTypeRef
-    ) == .success else { return false }
+func pressSendButton(field: AXUIElement, window: AXUIElement, message: String) -> Bool {
+    guard replaceText(in: field, with: message) else { return false }
 
     usleep(150_000)
-    guard (attribute(field, kAXValueAttribute as String) as? String) == message else {
-        return false
-    }
 
     // 버튼은 본문을 넣은 뒤에 찾는다. 카카오톡은 입력창이 비어 있는 동안 전송 버튼을
     // 그리지 않기도 해서, 먼저 찾으면 멀쩡한 창에서도 키보드 fallback 으로 떨어진다.
     // 그 경로는 카카오톡 창을 앞으로 끌어올리므로 이 도구의 존재 이유가 날아간다.
-    guard let button = findSendButton(in: window) else { return false }
+    guard let button = findSendButton(in: window),
+          (attribute(field, kAXValueAttribute as String) as? String) == message else { return false }
 
     AXUIElementPerformAction(button, kAXPressAction as CFString)
+    return true
+}
 
+func confirmSend(field: AXUIElement) -> Never {
     for _ in 0..<20 {
         usleep(100_000)
-        if ((attribute(field, kAXValueAttribute as String) as? String) ?? "").isEmpty {
-            return true
+        if (attribute(field, kAXValueAttribute as String) as? String)?.isEmpty == true {
+            print("sent")
+            exit(0)
         }
     }
-    return false
+    fail("전송 결과를 확인하지 못했습니다. 카카오톡에서 확인해 주세요.")
 }
 
 func runSend(message: String) -> Never {
@@ -596,15 +788,14 @@ func runSend(message: String) -> Never {
     guard let field = findInputField(in: window) else {
         fail("'\(chatTitle)' 채팅창에서 입력창을 찾지 못했습니다")
     }
+    if pressSendButton(field: field, window: window, message: message) {
+        confirmSend(field: field)
+    }
+
     guard let source = CGEventSource(stateID: .combinedSessionState) else {
         fail("CGEventSource 를 만들지 못했습니다")
     }
     let keyboard = Keyboard(pid: pid, source: source)
-
-    if sendWithoutKeyboard(field: field, window: window, message: message) {
-        print("sent")
-        exit(0)
-    }
 
     // fallback: 「전송」 버튼을 못 찾았거나 치환이 안 먹은 경우. 실제 키 이벤트를 쓴다.
     // postToPid 로 보낸 키는 앱의 key window 로 가므로, 대상 창을 main 으로 올려야
@@ -615,19 +806,33 @@ func runSend(message: String) -> Never {
     AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     usleep(120_000)
 
+    func verifyFocus() {
+        guard let focusedWindow = attribute(axApp, kAXFocusedWindowAttribute as String),
+              let focusedField = attribute(axApp, kAXFocusedUIElementAttribute as String),
+              CFEqual(focusedWindow, window), CFEqual(focusedField, field) else {
+            fail("대상 채팅창에 입력 포커스를 확인하지 못해 전송을 중단했습니다")
+        }
+    }
+
     // 입력창에 남아 있던 내용을 먼저 비운다. AXValue 를 ""로 덮으면 앱 모델과 어긋나므로
     // 전체선택 후 삭제를 실제 키 이벤트로 보낸다.
+    verifyFocus()
     keyboard.tap(aKey, flags: .maskCommand)
     usleep(60_000)
+    verifyFocus()
     keyboard.tap(deleteKey)
     usleep(60_000)
 
+    verifyFocus()
     keyboard.type(message)
     usleep(250_000)
+    guard (attribute(field, kAXValueAttribute as String) as? String) == message else {
+        fail("메시지 입력을 확인하지 못해 전송을 중단했습니다")
+    }
+    verifyFocus()
     keyboard.tap(returnKey)
 
-    print("sent")
-    exit(0)
+    confirmSend(field: field)
 }
 
 switch command {
@@ -635,7 +840,7 @@ case "send":
     guard arguments.count >= 4 else { fail("usage: tkt-ax send <chat> <message>") }
     runSend(message: arguments[3])
 case "read":
-    runRead(limit: arguments.count >= 4 ? (Int(arguments[3]) ?? 30) : 30)
+    runRead(limit: readLimit)
 case "open":
     runOpen(chat: chatTitle)
 default:
